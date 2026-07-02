@@ -8,12 +8,14 @@ live. No manual commands.
 ## Boot sequence (fully automatic)
 
 1. Pi powers on → NetworkManager auto-connects to the Wi-Fi configured in
-   `config.py` (`WIFI_SSID` / `WIFI_PASSWORD`).
-2. systemd starts the `dronai` service.
-3. The link supervisor connects to the Pixhawk on `/dev/serial0` (UART) and
+   `config.py` / `.env` (`WIFI_SSID` / `WIFI_PASSWORD`).
+2. `deploy/wait-for-network.sh` verifies connectivity (logs the IP; never
+   blocks startup if the router is off).
+3. systemd starts the `dronai` service via `deploy/start.sh`.
+4. The link supervisor connects to the Pixhawk on `/dev/serial0` (UART) and
    reconnects automatically whenever the heartbeat goes stale.
-4. The camera capture thread starts (auto-detect, auto-reconnect).
-5. Website available at `http://<pi-ip>:8000`.
+5. The camera capture thread starts (auto-detect, auto-reconnect).
+6. Website available at `http://<pi-ip>:8000`.
 
 ## Installation (Raspberry Pi 5, no Docker)
 
@@ -96,7 +98,12 @@ missions/mission_<timestamp>/
 | GET | `/missions-data/…` | Static mission outputs (photos, video, JSON) |
 | GET/DELETE | `/logs` | Application logs |
 
-## Configuration — all in `config.py` (env-overridable)
+## Configuration — all in `config.py`
+
+Nothing is hardcoded. Values resolve in priority order: **process
+environment → `server/.env` file → `config.py` defaults**. Copy
+`server/.env.example` to `server/.env` to override locally without touching
+source.
 
 | Variable | Default | Meaning |
 |---|---|---|

@@ -1,9 +1,14 @@
 """Application-wide configuration.
 
-Every configurable value lives here. All values can be overridden with
-environment variables, but the defaults below are the single source of truth
-for the deployed Raspberry Pi system (deploy/install.sh reads the Wi-Fi
-values from this file).
+Every configurable value lives here — nothing is hardcoded elsewhere.
+Values are resolved in priority order:
+
+    1. process environment variables
+    2. a `.env` file next to this module (server/.env, optional)
+    3. the defaults below
+
+deploy/install.sh reads the Wi-Fi values through this module, so `.env`
+overrides apply to deployment too.
 """
 import os
 import platform
@@ -12,6 +17,28 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 
 _IS_LINUX = platform.system() == "Linux"
+
+
+def _load_dotenv(path: Path) -> None:
+    """Load KEY=VALUE lines from *path* into os.environ (no overwrite).
+
+    Minimal parser — comments (#) and blank lines ignored, optional quotes
+    stripped. Process environment variables always win.
+    """
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv(BASE_DIR / ".env")
 
 
 def _env_bool(name: str, default: bool) -> bool:

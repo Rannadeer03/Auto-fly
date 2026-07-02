@@ -77,16 +77,19 @@ sed -e "s|/home/pi/DronAi/server|$SERVER_DIR|g" \
 sudo systemctl daemon-reload
 sudo systemctl enable dronai.service
 
+API_PORT="$(.venv/bin/python -c "from config import settings; print(settings.PORT)")"
+PIXHAWK_PORT="$(.venv/bin/python -c "from config import settings; print(settings.MAVLINK_PORT)")"
+
 echo ""
 echo "Installation complete. Reboot to activate everything:"
 echo "    sudo reboot"
 echo ""
 echo "After reboot the Pi will automatically:"
-echo "  1. Connect to Wi-Fi '$WIFI_SSID'"
+echo "  1. Connect to Wi-Fi '$WIFI_SSID' and verify connectivity"
 echo "  2. Start DronAI (systemd service 'dronai')"
-echo "  3. Connect to the Pixhawk on /dev/serial0 (UART)"
+echo "  3. Connect to the Pixhawk on $PIXHAWK_PORT (UART)"
 echo "  4. Initialise the camera and mapping system"
-echo "  5. Serve the website on http://<pi-ip>:8000"
+echo "  5. Serve the website on http://<pi-ip>:$API_PORT"
 echo ""
 echo "Useful commands:"
 echo "  sudo systemctl status dronai     # service status"

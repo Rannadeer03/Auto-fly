@@ -25,3 +25,6 @@ Autoflight/backend/uploads/missions/*
 
 # preserved history of the original standalone repos
 .git-backup/
+
+# local configuration overrides
+server/.env
