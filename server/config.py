@@ -1,8 +1,17 @@
-"""Application-wide configuration loaded from environment variables with safe defaults."""
+"""Application-wide configuration.
+
+Every configurable value lives here. All values can be overridden with
+environment variables, but the defaults below are the single source of truth
+for the deployed Raspberry Pi system (deploy/install.sh reads the Wi-Fi
+values from this file).
+"""
 import os
+import platform
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
+
+_IS_LINUX = platform.system() == "Linux"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -13,18 +22,26 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class Settings:
-    # ── MAVLink ────────────────────────────────────────────────────────────────
-    # "auto" scans for Pixhawk on /dev/cu.usbmodem* (macOS) or /dev/ttyACM* (Linux).
-    # Override with MAVLINK_PORT=/dev/ttyACM0 etc.
-    MAVLINK_PORT: str = os.environ.get("MAVLINK_PORT", "auto")
+    # ── Wi-Fi (applied by deploy/install.sh via NetworkManager) ────────────────
+    WIFI_SSID: str = os.environ.get("WIFI_SSID", "Coconut_ufi_97233")
+    WIFI_PASSWORD: str = os.environ.get("WIFI_PASSWORD", "1234567890")
+
+    # ── MAVLink / Pixhawk (UART) ───────────────────────────────────────────────
+    # Raspberry Pi 5 GPIO UART (pins 8/10) is /dev/serial0 → Pixhawk TELEM port.
+    # On non-Linux development machines "auto" scans USB ports instead.
+    MAVLINK_PORT: str = os.environ.get(
+        "MAVLINK_PORT", "/dev/serial0" if _IS_LINUX else "auto"
+    )
     MAVLINK_BAUD: int = int(os.environ.get("MAVLINK_BAUD", "57600"))
     # Pixhawk 2.4.8 can take 15+ seconds to boot and send first heartbeat.
     MAVLINK_TIMEOUT: float = float(os.environ.get("MAVLINK_TIMEOUT", "15.0"))
     HEARTBEAT_TIMEOUT: float = float(os.environ.get("HEARTBEAT_TIMEOUT", "5.0"))
 
-    # Try to connect to the Pixhawk automatically at startup (and keep retrying).
+    # Automatic connect at startup + automatic reconnect when the link drops.
     DRONE_AUTO_CONNECT: bool = _env_bool("DRONE_AUTO_CONNECT", True)
-    DRONE_AUTO_CONNECT_RETRY_S: float = float(os.environ.get("DRONE_AUTO_CONNECT_RETRY_S", "10.0"))
+    DRONE_AUTO_CONNECT_RETRY_S: float = float(os.environ.get("DRONE_AUTO_CONNECT_RETRY_S", "5.0"))
+    # If connected but no heartbeat for this long, tear down and reconnect.
+    LINK_STALE_S: float = float(os.environ.get("LINK_STALE_S", "10.0"))
 
     # Set DEBUG_MAVLINK=1 to log every MAVLink packet sent and received.
     DEBUG_MAVLINK: bool = _env_bool("DEBUG_MAVLINK", False)
@@ -42,12 +59,30 @@ class Settings:
     CAMERA_HEIGHT: int = int(os.environ.get("CAMERA_HEIGHT", "720"))
     CAMERA_FPS: int = int(os.environ.get("CAMERA_FPS", "30"))
     CAMERA_MJPEG: bool = _env_bool("CAMERA_MJPEG", True)
+    # Lens field of view — used for mapping footprint / overlap calculations.
+    CAMERA_HFOV_DEG: float = float(os.environ.get("CAMERA_HFOV_DEG", "62.2"))
+    CAMERA_VFOV_DEG: float = float(os.environ.get("CAMERA_VFOV_DEG", "48.8"))
 
     # ── Mission automation ─────────────────────────────────────────────────────
-    # Seconds to hold at each reached waypoint before capturing a photo.
-    WAYPOINT_HOLD_SECONDS: float = float(os.environ.get("WAYPOINT_HOLD_SECONDS", "2.0"))
+    # Continuous photo capture during flight for mapping.
+    #   "distance" — one photo every PHOTO_DISTANCE_M metres of travel
+    #   "time"     — one photo every PHOTO_INTERVAL_S seconds
+    PHOTO_CAPTURE_MODE: str = os.environ.get("PHOTO_CAPTURE_MODE", "distance")
+    PHOTO_DISTANCE_M: float = float(os.environ.get("PHOTO_DISTANCE_M", "10.0"))
+    PHOTO_INTERVAL_S: float = float(os.environ.get("PHOTO_INTERVAL_S", "2.0"))
+    # Only capture photos while airborne in AUTO (skip taxi/RTL descent photos).
+    CAPTURE_ONLY_IN_AUTO: bool = _env_bool("CAPTURE_ONLY_IN_AUTO", True)
+    # Record video during missions (optional per spec).
+    RECORDING_ENABLED: bool = _env_bool("RECORDING_ENABLED", True)
     # Telemetry sample interval during a mission (seconds).
     TELEMETRY_LOG_INTERVAL_S: float = float(os.environ.get("TELEMETRY_LOG_INTERVAL_S", "1.0"))
+
+    # ── Mission planning defaults (exposed to the frontend via GET /config) ───
+    DEFAULT_ALTITUDE_M: float = float(os.environ.get("DEFAULT_ALTITUDE_M", "30.0"))
+    DEFAULT_SPEED_MS: float = float(os.environ.get("DEFAULT_SPEED_MS", "5.0"))
+    DEFAULT_SIDE_OVERLAP_PCT: float = float(os.environ.get("DEFAULT_SIDE_OVERLAP_PCT", "65.0"))
+    DEFAULT_FRONT_OVERLAP_PCT: float = float(os.environ.get("DEFAULT_FRONT_OVERLAP_PCT", "75.0"))
+    DEFAULT_GRID_ANGLE_DEG: float = float(os.environ.get("DEFAULT_GRID_ANGLE_DEG", "0.0"))
 
     # ── Storage ────────────────────────────────────────────────────────────────
     MISSIONS_DIR: Path = Path(os.environ.get("MISSIONS_DIR", str(BASE_DIR / "missions")))

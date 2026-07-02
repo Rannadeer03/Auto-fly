@@ -1,133 +1,116 @@
-# DronAI Unified Server
+# DronAI — Self-Contained Raspberry Pi 5 Drone Computer
 
-One FastAPI application for the Raspberry Pi 5 that combines:
+One FastAPI backend + one website. After power-on everything happens
+automatically: Wi-Fi connects, the service starts, the Pixhawk links up over
+UART, the camera initialises, and the mission-planning/mapping website goes
+live. No manual commands.
 
-- **Drone control** (from `Autoflight/`): Pixhawk auto-connect with serial port
-  auto-detection, mission upload/verification (`.plan` / `.waypoints`),
-  mission execution, flight commands, telemetry.
-- **Camera** (from `Webcam/`): USB camera auto-detection, threaded capture with
-  automatic reconnect, WebRTC live streaming, video recording, photo capture.
-- **Mission automation** (new): when a mission starts, recording starts
-  automatically; at every reached waypoint the drone holds ~2 s and one photo
-  is captured; when the mission finishes (vehicle disarms), recording stops
-  and telemetry/metadata are written.
+## Boot sequence (fully automatic)
 
-## Layout
-
-```
-server/
-├── main.py                  # FastAPI entry point
-├── config.py                # all settings (env-overridable)
-├── api/                     # HTTP routes (drone + camera + missions)
-├── mavlink/                 # MAVLink connection, upload, commands, health
-├── parser/                  # .plan / .waypoints parsers
-├── models/                  # Pydantic models
-├── services/                # DroneService-layer singletons:
-│   ├── connection_service.py    #   Pixhawk connect lifecycle
-│   ├── mission_service.py       #   mission file handling + upload
-│   ├── telemetry_service.py     #   telemetry snapshots
-│   ├── camera_service.py        #   USB capture (auto-detect, auto-reconnect)
-│   ├── streaming_service.py     #   WebRTC live stream (independent of recording)
-│   ├── recording_service.py     #   mp4 recording
-│   ├── storage_service.py       #   missions/ folder layout
-│   └── mission_runner.py        #   mission automation
-├── missions/                # per-mission output (created at runtime)
-│   └── mission_<timestamp>/
-│       ├── video.mp4
-│       ├── images/waypoint_NNN.jpg
-│       ├── telemetry.json
-│       └── metadata.json
-└── deploy/                  # systemd unit + install/start scripts
-```
+1. Pi powers on → NetworkManager auto-connects to the Wi-Fi configured in
+   `config.py` (`WIFI_SSID` / `WIFI_PASSWORD`).
+2. systemd starts the `dronai` service.
+3. The link supervisor connects to the Pixhawk on `/dev/serial0` (UART) and
+   reconnects automatically whenever the heartbeat goes stale.
+4. The camera capture thread starts (auto-detect, auto-reconnect).
+5. Website available at `http://<pi-ip>:8000`.
 
 ## Installation (Raspberry Pi 5, no Docker)
 
 ```bash
-git clone <this-repo> ~/DronAi        # or copy the repo to the Pi
+git clone <this-repo> ~/DronAi
 cd ~/DronAi
-bash server/deploy/install.sh         # system deps, venv, permissions, systemd
-sudo systemctl start dronai
-journalctl -u dronai -f               # watch logs
+bash server/deploy/install.sh
+sudo reboot
 ```
 
-The installer adds your user to `dialout` (Pixhawk serial) and `video`
-(camera) groups, creates `server/.venv`, installs `requirements.txt`, and
-installs/enables the `dronai` systemd service (auto-start on boot,
-auto-restart on failure).
+The installer configures Wi-Fi auto-connect (NetworkManager), enables the
+UART and frees it from the serial console, adds the user to `dialout`/`video`
+groups, creates `server/.venv` with `requirements.txt`, and enables the
+`dronai` systemd service (auto-start on boot, always-restart).
 
-Manual run (development):
+Wire the Pixhawk TELEM port to the Pi GPIO UART: TX→GPIO15 (pin 10),
+RX→GPIO14 (pin 8), GND→GND. Baud 57600 (`MAVLINK_BAUD`).
 
-```bash
-bash server/deploy/start.sh
-# or: cd server && uvicorn main:app --host 0.0.0.0 --port 8000
+Manual run for development: `bash server/deploy/start.sh`
+
+## Website (single frontend, three tabs)
+
+- **Flight** — connection status, telemetry, mission file upload
+  (`.plan`/`.waypoints`), ARM/START/PAUSE/RTL/LAND controls, live logs.
+- **Planning** — mapping frontend: draw a survey polygon on the map,
+  configure altitude / speed / side & front overlap / grid angle / camera
+  interval, generate the lawnmower grid, preview it, and upload it to the
+  Pixhawk in one click.
+- **Missions** — mission history and results: photos, video, telemetry,
+  metadata, geotag index. Opens automatically when a mission completes.
+
+## Mission automation
+
+On `POST /start` (or the START button) a mission session begins:
+
+- an isolated folder `missions/mission_<timestamp>/` is created,
+- video recording starts (disable with `RECORDING_ENABLED=0`),
+- the flight plan is saved as `mission.json`,
+- the drone flies the mission normally — it is **never paused**. Photos are
+  captured continuously for mapping, every `PHOTO_DISTANCE_M` metres of
+  travel (or every `PHOTO_INTERVAL_S` seconds in `time` mode). Each photo is
+  geotagged from live telemetry into `mapping/photos.json`.
+- when the vehicle disarms (mission finished), recording stops and all files
+  are finalised.
+
+Mission folder layout:
+
+```
+missions/mission_<timestamp>/
+├── video.mp4
+├── photos/photo_00001.jpg …
+├── logs/mission.log
+├── telemetry.json
+├── metadata.json
+├── mission.json
+└── mapping/photos.json
 ```
 
 ## API
 
-Drone (unchanged from Autoflight):
-
 | Method | Path | Description |
 |---|---|---|
-| GET | `/ports` | List candidate Pixhawk serial ports |
-| POST | `/connect` | Connect to Pixhawk (auto-detects port) |
-| POST | `/disconnect` | Disconnect |
+| GET | `/` | The website |
+| GET | `/health` | Overall health |
+| POST | `/connect`, `/disconnect` | Manual Pixhawk link control (auto by default) |
+| GET | `/ports` | List candidate serial ports |
 | POST | `/upload` | Upload `.plan` / `.waypoints` mission file |
-| GET | `/mission` | Mission status |
+| POST | `/mission/generate` | Generate + upload survey grid from polygon |
+| GET | `/config` | Mission-planning defaults for the frontend |
+| GET | `/mission` | Current mission status |
 | POST | `/clear` | Clear mission |
-| GET | `/telemetry` | Full telemetry snapshot (poll at 1 Hz) |
-| POST | `/arm`, `/disarm` | Arm / disarm |
-| POST | `/start` | Start mission (AUTO) — **also starts mission automation** |
-| POST | `/pause`, `/resume` | Pause (LOITER) / resume (AUTO) |
-| POST | `/rtl`, `/land`, `/emergency_stop` | Safety commands |
-| GET/DELETE | `/logs` | Recent app logs |
+| GET | `/telemetry` | Telemetry snapshot (1 Hz poll) |
+| POST | `/arm`, `/disarm`, `/start`, `/pause`, `/resume`, `/rtl`, `/land`, `/emergency_stop` | Flight commands |
+| GET | `/camera/status` | Camera + recording status |
+| POST | `/camera/photo` | Manual photo |
+| POST | `/camera/recording/start`, `/camera/recording/stop` | Manual recording |
+| GET | `/missions` | Mission history |
+| GET | `/missions/{name}` | One mission's full results |
+| GET | `/mission/session` | Active automation session status |
+| GET | `/missions-data/…` | Static mission outputs (photos, video, JSON) |
+| GET/DELETE | `/logs` | Application logs |
 
-Camera / streaming / recording:
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/camera/status` | Camera + streaming + recording status |
-| POST | `/camera/photo` | Capture one photo |
-| POST | `/camera/recording/start` | Start manual recording |
-| POST | `/camera/recording/stop` | Stop manual recording |
-| POST | `/offer` | WebRTC signaling (same contract as Webcam backend) |
-| GET | `/api/status` | Webcam-backend-compatible status |
-| GET | `/stream` | Browser live-view page |
-
-Missions / storage:
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/missions` | List stored mission folders |
-| GET | `/mission/session` | Active mission-automation session status |
-| GET | `/health` | Overall health (drone, camera, recording, session) |
-
-Web UI: `http://<pi>:8000/` (mission control), `http://<pi>:8000/stream`
-(live video).
-
-## Configuration (environment variables)
-
-All defaults work out of the box on a Pi. Common overrides:
+## Configuration — all in `config.py` (env-overridable)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MAVLINK_PORT` | `auto` | Pixhawk serial port (`auto` scans /dev/ttyACM*, /dev/ttyUSB*) |
-| `MAVLINK_BAUD` | `57600` | Serial baud rate |
-| `DRONE_AUTO_CONNECT` | `1` | Connect to Pixhawk automatically at startup, keep retrying |
-| `CAMERA_DEVICE` | `auto` | `auto` scans /dev/video*; or e.g. `/dev/video0` |
-| `CAMERA_WIDTH`/`CAMERA_HEIGHT`/`CAMERA_FPS` | `1280`/`720`/`30` | Capture profile |
-| `WAYPOINT_HOLD_SECONDS` | `2.0` | Hold time at each waypoint before the photo |
-| `MISSIONS_DIR` | `server/missions` | Where mission folders are written |
+| `WIFI_SSID` / `WIFI_PASSWORD` | `Coconut_ufi_97233` / … | Wi-Fi applied by install.sh |
+| `MAVLINK_PORT` | `/dev/serial0` (Linux) | Pixhawk UART device |
+| `MAVLINK_BAUD` | `57600` | UART baud rate |
+| `LINK_STALE_S` | `10` | Heartbeat staleness before auto-reconnect |
+| `CAMERA_DEVICE` | `auto` | USB camera (`auto` scans /dev/video*) |
+| `CAMERA_HFOV_DEG` / `CAMERA_VFOV_DEG` | `62.2` / `48.8` | Lens FOV for overlap math |
+| `PHOTO_CAPTURE_MODE` | `distance` | `distance` or `time` |
+| `PHOTO_DISTANCE_M` | `10` | Metres between mapping photos |
+| `PHOTO_INTERVAL_S` | `2` | Seconds between photos (time mode) |
+| `RECORDING_ENABLED` | `1` | Record video during missions |
+| `DEFAULT_ALTITUDE_M` / `DEFAULT_SPEED_MS` | `30` / `5` | Planning defaults |
+| `DEFAULT_SIDE_OVERLAP_PCT` / `DEFAULT_FRONT_OVERLAP_PCT` | `65` / `75` | Overlap defaults |
+| `MISSIONS_DIR` | `server/missions` | Mission output root |
 | `PORT` | `8000` | HTTP port |
-
-## Behavior notes
-
-- **Streaming is independent from recording.** Both read the latest frame
-  from the shared camera service; a WebRTC failure never affects recording,
-  the mission, or the camera thread.
-- **Camera disconnects** are handled by the capture thread with backoff
-  reopen; an active recording stays open and resumes writing when the camera
-  returns.
-- **Mission completion** is detected when the vehicle disarms (the reliable
-  end-of-mission signal for ArduPilot missions ending in RTL/LAND).
-  Recording also stops on connection loss or server shutdown, and
-  `telemetry.json` / `metadata.json` are always written.

@@ -69,7 +69,10 @@ async def start_mission() -> ApiResponse:
             from services.mission_runner import mission_runner
             from services.mission_service import mission_service
             mission = mission_service.current_mission
-            mission_runner.on_mission_started(mission.filename if mission else "")
+            mission_runner.on_mission_started(
+                mission.filename if mission else "",
+                mission.model_dump() if mission else None,
+            )
         except Exception:
             logger.exception("Mission automation failed to start — flight continues.")
         return _ok("Mission started in AUTO mode.")

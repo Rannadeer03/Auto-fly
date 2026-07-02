@@ -1,22 +1,23 @@
 """
 DronAI unified Raspberry Pi drone server — FastAPI application entry point.
 
-Combines the Autoflight mission-control backend (Pixhawk/MAVLink) with the
-Webcam camera backend (USB capture, WebRTC streaming) and adds mission
-automation (auto recording, waypoint photos, telemetry logging, per-mission
-storage folders).
+Self-contained drone computer: after power-on, systemd starts this app,
+which connects to the Pixhawk over UART automatically (and reconnects if the
+link drops), initialises the camera, and serves the single mission-planning
+and mapping website.
 
-Start with:
+Start manually with:
     cd server
     uvicorn main:app --host 0.0.0.0 --port 8000
 """
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -27,29 +28,37 @@ from services.log_service import log_service
 logger = logging.getLogger(__name__)
 
 
-# ── Drone auto-connect ─────────────────────────────────────────────────────────
+# ── Pixhawk link supervisor ────────────────────────────────────────────────────
 
-def _auto_connect_loop(stop_event: threading.Event) -> None:
-    """Keep trying to connect to the Pixhawk until it succeeds or we shut down.
+def _link_supervisor_loop(stop_event: threading.Event) -> None:
+    """Keep the single MAVLink connection alive for the life of the process.
+
+    - Not connected  → try to connect (UART port from config).
+    - Connected but heartbeat stale for LINK_STALE_S → tear down + reconnect.
 
     Uses the same ConnectionService as POST /connect, so manual API connects
-    and auto-connect can never race into a double connection.
+    and the supervisor can never race into a second connection.
     """
     from mavlink.connection import drone_state
     from services.connection_service import connection_service
 
     while not stop_event.is_set():
-        if drone_state.connected:
-            stop_event.wait(settings.DRONE_AUTO_CONNECT_RETRY_S)
-            continue
         try:
-            port = connection_service.connect()
-            logger.info("Auto-connect: Pixhawk connected on %s.", port)
+            if not drone_state.connected:
+                port = connection_service.connect()
+                logger.info("Link supervisor: Pixhawk connected on %s.", port)
+            elif drone_state.last_heartbeat_ago_s > settings.LINK_STALE_S:
+                logger.warning(
+                    "Link supervisor: heartbeat stale (%.1fs) — reconnecting.",
+                    drone_state.last_heartbeat_ago_s,
+                )
+                connection_service.disconnect()
+                continue  # reconnect on the next iteration without waiting
         except RuntimeError:
             pass  # already connected via the API — nothing to do
         except Exception as exc:
             logger.info(
-                "Auto-connect: Pixhawk not available (%s). Retrying in %.0fs.",
+                "Link supervisor: Pixhawk not available (%s). Retrying in %.0fs.",
                 exc, settings.DRONE_AUTO_CONNECT_RETRY_S,
             )
         stop_event.wait(settings.DRONE_AUTO_CONNECT_RETRY_S)
@@ -71,20 +80,20 @@ async def lifespan(app: FastAPI):
     from services.camera_service import camera_service
     camera_service.start()
 
-    # Pixhawk auto-connect (background, non-blocking, keeps retrying).
-    auto_connect_stop = threading.Event()
+    # Pixhawk connect + auto-reconnect (background, non-blocking).
+    supervisor_stop = threading.Event()
     if settings.DRONE_AUTO_CONNECT:
         threading.Thread(
-            target=_auto_connect_loop,
-            args=(auto_connect_stop,),
-            name="pixhawk-auto-connect",
+            target=_link_supervisor_loop,
+            args=(supervisor_stop,),
+            name="pixhawk-link-supervisor",
             daemon=True,
         ).start()
 
     yield
 
     logger.info("DronAI server shutting down.")
-    auto_connect_stop.set()
+    supervisor_stop.set()
 
     # End any active mission session cleanly (stops recording, writes files).
     from services.mission_runner import mission_runner
@@ -93,9 +102,6 @@ async def lifespan(app: FastAPI):
 
     from services.recording_service import recording_service
     recording_service.stop()
-
-    from services.streaming_service import streaming_service
-    await streaming_service.shutdown()
 
     camera_service.stop()
 
@@ -112,8 +118,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="DronAI Server",
     version="2.0.0",
-    description="Unified Raspberry Pi drone server: mission control, camera, "
-                "live streaming, and mission automation.",
+    description="Self-contained Raspberry Pi drone computer: mission planning, "
+                "mapping, camera automation, and Pixhawk control.",
     lifespan=lifespan,
 )
 
@@ -128,6 +134,14 @@ app.mount(
     "/static",
     StaticFiles(directory=str(BASE_DIR / "static")),
     name="static",
+)
+
+# Mission outputs (photos, video, mapping data) — browsable by the frontend.
+settings.MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/missions-data",
+    StaticFiles(directory=str(settings.MISSIONS_DIR)),
+    name="missions-data",
 )
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -146,11 +160,6 @@ app.include_router(missions.router)
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(request, "index.html")
-
-
-@app.get("/stream", response_class=HTMLResponse)
-async def stream_page():
-    return FileResponse(BASE_DIR / "static" / "stream.html")
 
 
 @app.get("/health")

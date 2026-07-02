@@ -3,8 +3,39 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mission Planner — Agricultural Drone Control</title>
+  <title>DronAI — Drone Control &amp; Mapping</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <style>
+    /* ── Tabs ── */
+    .tab-btn { padding: 6px 16px; border-radius: 8px; font-size: 12px; font-weight: 700;
+               text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer;
+               color: #94a3b8; background: transparent; border: 1px solid transparent;
+               transition: all 0.15s; }
+    .tab-btn:hover { color: #e2e8f0; }
+    .tab-btn.active { color: #38bdf8; background: rgba(2,132,199,0.12);
+                      border-color: rgba(2,132,199,0.4); }
+    .tab-section.hidden { display: none; }
+
+    /* ── Map ── */
+    #map { height: 560px; border-radius: 12px; z-index: 0; background: #0b1220; }
+    .leaflet-container { font: inherit; }
+    .param-input { background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+                   color: #f1f5f9; font-size: 13px; padding: 6px 8px; width: 100%; }
+    .param-input:focus { outline: none; border-color: #0284c7; }
+    .param-label { color: #94a3b8; font-size: 11px; text-transform: uppercase;
+                   letter-spacing: 0.05em; display: block; margin-bottom: 3px; }
+
+    /* ── Mission history ── */
+    .mission-item { background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+                    padding: 12px 14px; cursor: pointer; transition: all 0.15s; }
+    .mission-item:hover, .mission-item.selected { border-color: #0284c7;
+                    background: rgba(2,132,199,0.06); }
+    .photo-thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 6px;
+                   border: 1px solid #334155; background: #0b1220; }
+  </style>
   <style>
     /* ── Base ── */
     body { background-color: #0f172a; color: #e2e8f0; font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace; }
@@ -98,9 +129,16 @@
         <path stroke-linecap="round" stroke-linejoin="round"
               d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
       </svg>
-      <span class="text-sky-400 font-bold text-base tracking-widest uppercase">Mission Planner</span>
-      <span class="text-slate-600 text-xs ml-1">v1.0</span>
+      <span class="text-sky-400 font-bold text-base tracking-widest uppercase">DronAI</span>
+      <span class="text-slate-600 text-xs ml-1">v2.0</span>
     </div>
+
+    <!-- Tabs -->
+    <nav class="flex items-center gap-1 mr-2">
+      <button id="tabbtn-flight"   class="tab-btn active" onclick="ui.showTab('flight')">Flight</button>
+      <button id="tabbtn-planning" class="tab-btn" onclick="ui.showTab('planning')">Planning</button>
+      <button id="tabbtn-missions" class="tab-btn" onclick="ui.showTab('missions')">Missions</button>
+    </nav>
 
     <!-- Connection status -->
     <div class="flex items-center gap-2">
@@ -151,7 +189,10 @@
 </header>
 
 <!-- ══════════════════════════════════════════════════ MAIN CONTENT -->
-<main class="max-w-screen-2xl mx-auto px-4 py-5 space-y-5">
+<main class="max-w-screen-2xl mx-auto px-4 py-5">
+
+<!-- ─────────────────────────────────────────── TAB: FLIGHT -->
+<div id="tab-flight" class="tab-section space-y-5">
 
   <!-- Row 1: Status | Upload | Controls -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -524,13 +565,130 @@
     </div>
 
   </div>
+</div><!-- /tab-flight -->
+
+<!-- ─────────────────────────────────────────── TAB: PLANNING (MAPPING) -->
+<div id="tab-planning" class="tab-section hidden">
+  <div class="grid grid-cols-1 lg:grid-cols-4 gap-5">
+
+    <!-- Map -->
+    <div class="card lg:col-span-3 p-3">
+      <div class="flex items-center justify-between mb-2 px-1">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Survey Planning Map</h2>
+        <div class="flex items-center gap-2">
+          <button id="btn-draw"       class="btn btn-primary">✏ Draw Area</button>
+          <button id="btn-finish-poly" class="btn btn-success hidden">✓ Finish</button>
+          <button id="btn-clear-poly"  class="btn btn-ghost">Clear</button>
+        </div>
+      </div>
+      <div id="map"></div>
+      <p id="map-hint" class="text-xs text-slate-500 mt-2 px-1">
+        Click “Draw Area”, then click on the map to add polygon vertices. Click “Finish” when done.
+        Map tiles need internet — planning still works without them.
+      </p>
+    </div>
+
+    <!-- Parameters -->
+    <div class="card flex flex-col">
+      <div class="card-header">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Mapping Parameters</h2>
+      </div>
+      <div class="p-4 flex-1 flex flex-col gap-3">
+        <div>
+          <label class="param-label" for="p-alt">Flight Altitude (m)</label>
+          <input id="p-alt" class="param-input" type="number" min="2" max="500" step="1" value="30">
+        </div>
+        <div>
+          <label class="param-label" for="p-speed">Flight Speed (m/s)</label>
+          <input id="p-speed" class="param-input" type="number" min="0.5" max="25" step="0.5" value="5">
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="param-label" for="p-side">Side Overlap (%)</label>
+            <input id="p-side" class="param-input" type="number" min="0" max="95" step="5" value="65">
+          </div>
+          <div>
+            <label class="param-label" for="p-front">Front Overlap (%)</label>
+            <input id="p-front" class="param-input" type="number" min="0" max="95" step="5" value="75">
+          </div>
+        </div>
+        <div>
+          <label class="param-label" for="p-angle">Grid Angle (°)</label>
+          <input id="p-angle" class="param-input" type="number" min="0" max="359" step="5" value="0">
+        </div>
+        <div>
+          <label class="param-label" for="p-photodist">Camera Interval (m) — blank = auto from overlap</label>
+          <input id="p-photodist" class="param-input" type="number" min="0.5" step="0.5" placeholder="auto">
+        </div>
+
+        <button id="btn-generate" class="btn btn-success w-full mt-1" disabled>
+          Generate Grid &amp; Upload
+        </button>
+
+        <!-- Plan result -->
+        <div id="plan-result" class="hidden bg-slate-900/60 rounded-lg p-3 border border-slate-700 space-y-1">
+          <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Generated Plan</p>
+          <div class="tele-row"><span class="tele-label">Waypoints</span>
+            <span id="pr-wpts" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Grid Lines</span>
+            <span id="pr-lines" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Line Spacing</span>
+            <span id="pr-spacing" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Photo Every</span>
+            <span id="pr-photo" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Distance</span>
+            <span id="pr-dist" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Est. Duration</span>
+            <span id="pr-dur" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Est. Photos</span>
+            <span id="pr-photos" class="tele-value"></span></div>
+          <div class="tele-row"><span class="tele-label">Uploaded</span>
+            <span id="pr-uploaded" class="tele-value"></span></div>
+        </div>
+
+        <p class="text-xs text-slate-600 mt-auto pt-2">
+          After upload, switch to the <b>Flight</b> tab to ARM and START the mission.
+          Photos are captured continuously during flight — the drone never pauses.
+        </p>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-planning -->
+
+<!-- ─────────────────────────────────────────── TAB: MISSIONS (HISTORY & RESULTS) -->
+<div id="tab-missions" class="tab-section hidden">
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+    <!-- Mission list -->
+    <div class="card flex flex-col">
+      <div class="card-header flex items-center justify-between">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Mission History</h2>
+        <button class="text-xs text-slate-500 hover:text-slate-300" onclick="ui.loadMissions()">↻ Refresh</button>
+      </div>
+      <div id="mission-list" class="p-4 space-y-2 overflow-y-auto" style="max-height: 640px;">
+        <p class="text-xs text-slate-500">No missions recorded yet.</p>
+      </div>
+    </div>
+
+    <!-- Mission detail -->
+    <div class="card lg:col-span-2 flex flex-col">
+      <div class="card-header">
+        <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Mission Results</h2>
+      </div>
+      <div id="mission-detail" class="p-4 flex-1 overflow-y-auto" style="max-height: 640px;">
+        <p class="text-xs text-slate-500">Select a mission to view its results.</p>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-missions -->
+
 </main>
 
 <!-- ══════════════════════════════════════════════════ FOOTER -->
 <footer class="border-t border-slate-800 mt-8 py-4 px-4">
   <div class="max-w-screen-2xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-    <span class="text-xs text-slate-600">Mission Planner v1.0 — Agricultural Drone Control System</span>
-    <span class="text-xs text-slate-700">Raspberry Pi 5 ↔ Pixhawk 2.4.8 ↔ MAVLink</span>
+    <span class="text-xs text-slate-600">DronAI v2.0 — Autonomous Drone Mapping System</span>
+    <span class="text-xs text-slate-700">Raspberry Pi 5 ↔ Pixhawk (UART) ↔ MAVLink</span>
   </div>
 </footer>
 
@@ -540,5 +698,6 @@
 </div>
 
 <script src="/static/js/app.js"></script>
+<script src="/static/js/planning.js"></script>
 </body>
 </html>

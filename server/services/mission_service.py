@@ -101,6 +101,45 @@ class MissionService:
             "verification_message": verification_message,
         }
 
+    def store_mission(self, mission: Mission) -> None:
+        """Hold a Mission locally without uploading it to the vehicle."""
+        self._current_mission = mission
+
+    def load_generated(self, mission: Mission) -> dict:
+        """Adopt an in-memory Mission (e.g. survey grid) and upload if connected.
+
+        Mirrors process_upload() but skips file parsing/saving of raw bytes.
+        """
+        self._current_mission = mission
+        uploaded = False
+        verified = False
+        verification_message = ""
+
+        if drone_state.connected:
+            logger.info("Uploading generated mission to Pixhawk.")
+            self._uploader.clear_mission()
+            self._uploader.upload_mission(mission)
+            drone_state.update(
+                mission_uploaded=True,
+                waypoint_count=mission.waypoint_count,
+                current_waypoint=0,
+            )
+            uploaded = True
+            verified, verification_message = self._uploader.verify_mission(mission)
+            if not verified:
+                logger.error("Mission verification failed: %s", verification_message)
+            else:
+                logger.info("Mission verification passed.")
+        else:
+            logger.info("Drone not connected — generated mission stored locally only.")
+
+        return {
+            "mission_info": mission,
+            "uploaded_to_drone": uploaded,
+            "verified": verified,
+            "verification_message": verification_message,
+        }
+
     def upload_current_to_drone(self) -> tuple[bool, str]:
         """Push the already-parsed mission to the Pixhawk (used after late connect).
 

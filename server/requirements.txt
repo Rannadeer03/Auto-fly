@@ -6,12 +6,10 @@ python-multipart>=0.0.9
 jinja2>=3.1
 aiofiles>=23.2
 
-# MAVLink / Pixhawk
+# MAVLink / Pixhawk (UART)
 pymavlink>=2.4.41
 pyserial>=3.5
 
-# Camera / streaming
+# Camera (photo capture + video recording)
 opencv-python-headless>=4.9
 numpy>=1.26
-aiortc>=1.9
-av>=12.0
