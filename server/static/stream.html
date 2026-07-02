@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DronAI — Live Feed</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #e6e6e6;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 12px 20px;
+    border-bottom: 1px solid #1f242b;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #8fd3ff;
+  }
+  main {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 16px;
+  }
+  .video-wrap {
+    position: relative;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    line-height: 0;
+    flex: 1 1 640px;
+  }
+  video {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #000;
+  }
+  .stats {
+    flex: 0 0 260px;
+    background: #14181d;
+    border-radius: 8px;
+    padding: 16px;
+    font-size: 13px;
+  }
+  .stats h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    color: #9aa4b2;
+    letter-spacing: 0.04em;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #1f242b;
+  }
+  .stat-row:last-child {
+    border-bottom: none;
+  }
+  .stat-label {
+    color: #9aa4b2;
+  }
+  .stat-value {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .badge.connected, .badge.completed { background: #163d23; color: #5fd97c; }
+  .badge.connecting, .badge.checking, .badge.new { background: #3d3416; color: #e8c95f; }
+  .badge.disconnected, .badge.failed, .badge.closed { background: #3d1616; color: #ff7676; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DronAI — Live Feed</h1>
+</header>
+<main>
+  <div class="video-wrap">
+    <video id="video" autoplay playsinline muted></video>
+  </div>
+  <div class="stats">
+    <h2>Connection</h2>
+    <div class="stat-row">
+      <span class="stat-label">Peer connection</span>
+      <span class="stat-value"><span id="connectionState" class="badge new">new</span></span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">ICE state</span>
+      <span class="stat-value"><span id="iceState" class="badge new">new</span></span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Resolution</span>
+      <span class="stat-value" id="resolution">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Client FPS</span>
+      <span class="stat-value" id="clientFps">—</span>
+    </div>
+    <h2 style="margin-top: 18px;">Camera (server)</h2>
+    <div class="stat-row">
+      <span class="stat-label">Healthy</span>
+      <span class="stat-value" id="cameraHealthy">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Server FPS</span>
+      <span class="stat-value" id="serverFps">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Active clients</span>
+      <span class="stat-value" id="peerCount">—</span>
+    </div>
+  </div>
+</main>
+<script src="/static/js/stream_client.js"></script>
+</body>
+</html>

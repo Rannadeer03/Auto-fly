@@ -1,0 +1,25 @@
+[Unit]
+Description=DronAI WebRTC Backend (FastAPI + aiortc)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/Webcam-pi
+Environment=PATH=/home/pi/Webcam-pi/.venv/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/Webcam-pi/.venv/bin/uvicorn backend.app:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dronai-backend
+
+[Install]
+WantedBy=multi-user.target

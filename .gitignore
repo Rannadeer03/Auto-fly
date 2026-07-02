@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Logs
+logs/*.log*
+*.log
+
+# Runtime output — mission recordings, photos, uploaded mission files
+server/missions/
+server/uploads/missions/*
+!server/uploads/missions/.gitkeep
+Autoflight/backend/uploads/missions/*
+!Autoflight/backend/uploads/missions/.gitkeep
+
+# IDE / local settings
+.claude/
+.idea/
+.vscode/
+
+# preserved history of the original standalone repos
+.git-backup/
