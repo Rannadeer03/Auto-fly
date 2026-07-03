@@ -14,20 +14,30 @@ isolated in its own folder:
             telemetry.json
             metadata.json
             mission.json          # the flight plan that was executed
+            index.json            # auto-generated file index + flight stats
             mapping/
                 photos.json       # per-photo geotags for map stitching
 """
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import re
+import shutil
 import threading
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from config import settings
+
+# Folder names created by create_mission_storage(): mission_<ts> or mission_<ts>_<n>
+_MISSION_NAME_RE = re.compile(r"^mission_\d{8}_\d{6}(_\d+)?$")
+
+_ZIP_CHUNK_BYTES = 512 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -123,54 +133,221 @@ class StorageService:
         logger.info("Mission storage created: %s", root)
         return storage
 
-    def list_missions(self) -> list[dict]:
-        """Return summaries of every stored mission, newest first."""
+    def resolve_mission_root(self, name: str) -> Optional[Path]:
+        """Return the mission folder for *name*, or None.
+
+        Validates the name against the folder-name pattern before touching the
+        filesystem, so path traversal through the API is impossible.
+        """
+        if not _MISSION_NAME_RE.match(name):
+            return None
+        root = settings.MISSIONS_DIR / name
+        return root if root.is_dir() else None
+
+    def list_missions(self, query: str = "") -> list[dict]:
+        """Return summaries of every stored mission, newest first.
+
+        *query* filters (case-insensitive substring) on the folder name and
+        key metadata fields (mission name, dates, end reason).
+        """
         results: list[dict] = []
         if not settings.MISSIONS_DIR.exists():
             return results
+        q = query.strip().lower()
         for entry in sorted(settings.MISSIONS_DIR.iterdir(), reverse=True):
-            if not entry.is_dir() or not entry.name.startswith("mission_"):
+            if not entry.is_dir() or not _MISSION_NAME_RE.match(entry.name):
                 continue
-            results.append(self.mission_summary(entry))
+            summary = self.mission_summary(entry)
+            if q and not self._matches_query(summary, q):
+                continue
+            results.append(summary)
         return results
 
+    @staticmethod
+    def _matches_query(summary: dict, q: str) -> bool:
+        meta = summary.get("metadata") or {}
+        haystack = " ".join(
+            str(v)
+            for v in (
+                summary["name"],
+                meta.get("mission_name"),
+                meta.get("started_at"),
+                meta.get("ended_at"),
+                meta.get("end_reason"),
+            )
+            if v
+        ).lower()
+        return q in haystack
+
     def mission_summary(self, entry: Path) -> dict:
-        metadata: Optional[dict] = None
-        meta_file = entry / "metadata.json"
-        if meta_file.exists():
-            try:
-                metadata = json.loads(meta_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                metadata = None
+        metadata = self._read_json(entry / "metadata.json")
+        index = self.ensure_index(entry)
         photos_dir = entry / "photos"
         return {
             "name": entry.name,
-            "path": str(entry),
             "has_video": (entry / "video.mp4").exists(),
             "photo_count": (
                 len(list(photos_dir.glob("*.jpg"))) if photos_dir.exists() else 0
             ),
             "has_mapping_index": (entry / "mapping" / "photos.json").exists(),
+            "has_log": (entry / "logs" / "mission.log").exists(),
             "metadata": metadata,
+            "total_size_bytes": index.get("total_size_bytes", 0) if index else 0,
+            "stats": index.get("stats") if index else None,
         }
 
     def get_mission_detail(self, name: str) -> Optional[dict]:
-        """Full detail for one stored mission: metadata, photo index, plan."""
-        root = settings.MISSIONS_DIR / name
-        if not root.is_dir() or not name.startswith("mission_"):
+        """Full detail for one stored mission: metadata, indices, plan, stats."""
+        root = self.resolve_mission_root(name)
+        if root is None:
             return None
         detail = self.mission_summary(root)
-        for key, rel in (
-            ("photos", Path("mapping/photos.json")),
-            ("mission", Path("mission.json")),
-        ):
-            f = root / rel
-            if f.exists():
-                try:
-                    detail[key] = json.loads(f.read_text())
-                except (json.JSONDecodeError, OSError):
-                    detail[key] = None
+        detail["photos"] = self._read_json(root / "mapping" / "photos.json")
+        detail["mission"] = self._read_json(root / "mission.json")
+        index = self.ensure_index(root)
+        detail["files"] = index.get("files", []) if index else []
         return detail
+
+    # ── Mission index (auto-generated after every mission) ─────────────────────
+
+    def build_index(self, root: Path) -> dict:
+        """Scan a mission folder and write index.json: every file with its
+        size, plus flight statistics derived from telemetry.json."""
+        files: list[dict] = []
+        total = 0
+        for f in sorted(root.rglob("*")):
+            if not f.is_file() or f.name == "index.json":
+                continue
+            size = f.stat().st_size
+            files.append({"path": str(f.relative_to(root)), "size": size})
+            total += size
+        index = {
+            "name": root.name,
+            "generated_at": utc_now_iso(),
+            "file_count": len(files),
+            "total_size_bytes": total,
+            "stats": self._telemetry_stats(root / "telemetry.json"),
+            "files": files,
+        }
+        (root / "index.json").write_text(json.dumps(index, indent=2))
+        logger.info("Mission index written: %s (%d files)", root.name, len(files))
+        return index
+
+    def ensure_index(self, root: Path) -> Optional[dict]:
+        """Load index.json, building it first for pre-existing missions that
+        were recorded before indexing existed. Never indexes a folder that is
+        still missing metadata.json (i.e. a mission still in progress)."""
+        index = self._read_json(root / "index.json")
+        if index is not None:
+            return index
+        if not (root / "metadata.json").exists():
+            return None  # mission still recording — index is built at finalise
+        try:
+            return self.build_index(root)
+        except OSError:
+            logger.exception("Failed to build index for %s", root.name)
+            return None
+
+    @staticmethod
+    def _telemetry_stats(telemetry_path: Path) -> Optional[dict]:
+        """Derive flight statistics from the recorded telemetry samples."""
+        samples = StorageService._read_json(telemetry_path)
+        if not samples or not isinstance(samples, list):
+            return None
+        from parser.waypoint_parser import haversine_m
+
+        distance = 0.0
+        max_alt = 0.0
+        max_speed = 0.0
+        prev: Optional[tuple[float, float]] = None
+        voltages = []
+        for s in samples:
+            lat, lon = s.get("latitude", 0.0), s.get("longitude", 0.0)
+            if lat or lon:
+                if prev is not None:
+                    distance += haversine_m(prev[0], prev[1], lat, lon)
+                prev = (lat, lon)
+            max_alt = max(max_alt, s.get("altitude_rel", 0.0) or 0.0)
+            max_speed = max(max_speed, s.get("ground_speed", 0.0) or 0.0)
+            v = s.get("battery_voltage", 0.0) or 0.0
+            if v > 0:
+                voltages.append(v)
+        return {
+            "samples": len(samples),
+            "distance_m": round(distance, 1),
+            "max_altitude_rel_m": round(max_alt, 1),
+            "max_ground_speed_ms": round(max_speed, 2),
+            "battery_voltage_start": voltages[0] if voltages else None,
+            "battery_voltage_end": voltages[-1] if voltages else None,
+        }
+
+    # ── Deletion ───────────────────────────────────────────────────────────────
+
+    def delete_mission(self, name: str) -> bool:
+        root = self.resolve_mission_root(name)
+        if root is None:
+            return False
+        shutil.rmtree(root)
+        logger.info("Mission deleted: %s", name)
+        return True
+
+    # ── ZIP export (streamed — nothing is duplicated on disk) ─────────────────
+
+    def zip_stream(self, root: Path) -> Iterator[bytes]:
+        """Yield a ZIP archive of the whole mission folder, chunk by chunk.
+
+        Files are read straight from the mission folder and streamed out
+        through an in-memory buffer — no temporary copy is ever written.
+        ZIP_STORED is used because photos/video are already compressed.
+        """
+        buffer = _StreamBuffer()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for f in sorted(root.rglob("*")):
+                if not f.is_file():
+                    continue
+                arcname = f"{root.name}/{f.relative_to(root)}"
+                info = zipfile.ZipInfo.from_file(f, arcname)
+                with f.open("rb") as src, zf.open(info, "w") as dst:
+                    while chunk := src.read(_ZIP_CHUNK_BYTES):
+                        dst.write(chunk)
+                        if (data := buffer.take()):
+                            yield data
+                if (data := buffer.take()):
+                    yield data
+        if (data := buffer.take()):
+            yield data
+
+    @staticmethod
+    def _read_json(path: Path):
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+
+class _StreamBuffer(io.RawIOBase):
+    """Write-only file object that hands written bytes back via take().
+
+    zipfile detects the stream is unseekable and emits data descriptors,
+    which every mainstream unzip tool supports.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: list[bytes] = []
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b) -> int:
+        self._chunks.append(bytes(b))
+        return len(b)
+
+    def take(self) -> bytes:
+        data = b"".join(self._chunks)
+        self._chunks.clear()
+        return data
 
 
 def utc_now_iso() -> str:
