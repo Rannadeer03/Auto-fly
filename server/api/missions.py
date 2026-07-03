@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import settings
@@ -123,19 +124,90 @@ async def get_planning_config() -> dict:
 # ── Mission history / results ──────────────────────────────────────────────────
 
 @router.get("/missions")
-async def list_missions() -> dict:
-    """List every stored mission folder (video/photos/telemetry), newest first."""
-    missions = storage_service.list_missions()
-    return {"missions": missions, "count": len(missions)}
+async def list_missions(q: str = "") -> dict:
+    """List every stored mission folder, newest first.
+
+    Optional ?q= filters on folder name, mission name, dates and end reason.
+    """
+    missions = storage_service.list_missions(q)
+    active_folder = None
+    if mission_runner.is_active:
+        active_folder = mission_runner.get_status().get("mission_folder")
+    for m in missions:
+        m["active"] = m["name"] == active_folder
+    return {"missions": missions, "count": len(missions), "query": q}
 
 
 @router.get("/missions/{name}")
 async def mission_detail(name: str) -> dict:
-    """Full detail for one stored mission: metadata, geotagged photo index, plan."""
+    """Full detail for one stored mission: metadata, geotagged photo index,
+    executed plan, file index, and telemetry-derived flight statistics."""
     detail = storage_service.get_mission_detail(name)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Mission '{name}' not found.")
+    detail["active"] = _is_active_mission(name)
     return detail
+
+
+@router.get("/missions/{name}/log")
+async def mission_log(name: str, tail: int = 500) -> dict:
+    """The mission's own log file (last *tail* lines)."""
+    root = storage_service.resolve_mission_root(name)
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"Mission '{name}' not found.")
+    log_file = root / "logs" / "mission.log"
+    if not log_file.exists():
+        return {"name": name, "lines": [], "total_lines": 0}
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read log: {exc}")
+    return {"name": name, "lines": lines[-tail:], "total_lines": len(lines)}
+
+
+@router.get("/missions/{name}/download")
+async def download_mission(name: str) -> StreamingResponse:
+    """Export the complete mission folder as a single ZIP archive.
+
+    The archive is streamed straight from the mission's files on disk —
+    nothing is copied or stored server-side.
+    """
+    root = storage_service.resolve_mission_root(name)
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"Mission '{name}' not found.")
+    if _is_active_mission(name):
+        raise HTTPException(
+            status_code=409,
+            detail="Mission is still recording — download it after it completes.",
+        )
+    return StreamingResponse(
+        storage_service.zip_stream(root),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+    )
+
+
+@router.delete("/missions/{name}")
+async def delete_mission(name: str) -> dict:
+    """Permanently delete a stored mission folder and everything in it."""
+    if storage_service.resolve_mission_root(name) is None:
+        raise HTTPException(status_code=404, detail=f"Mission '{name}' not found.")
+    if _is_active_mission(name):
+        raise HTTPException(
+            status_code=409,
+            detail="Mission is still recording — stop the session before deleting.",
+        )
+    if not storage_service.delete_mission(name):
+        raise HTTPException(status_code=500, detail="Failed to delete mission.")
+    logger.info("Mission '%s' deleted via API.", name)
+    return {"success": True, "message": f"Mission '{name}' deleted.", "name": name}
+
+
+def _is_active_mission(name: str) -> bool:
+    return (
+        mission_runner.is_active
+        and mission_runner.get_status().get("mission_folder") == name
+    )
 
 
 @router.get("/mission/session")

@@ -276,6 +276,14 @@ class MissionRunner:
             storage.name, self._photos_captured,
         )
         self._detach_mission_log()
+
+        # Index the finished mission folder (after the mission log is closed)
+        # so the web UI can browse, search and download it without any
+        # filesystem access.
+        try:
+            storage_service.build_index(storage.root)
+        except Exception:
+            logger.exception("Failed to build mission index")
         with self._lock:
             self._last_completed = storage.name
 

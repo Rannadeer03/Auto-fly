@@ -34,7 +34,29 @@
     .mission-item:hover, .mission-item.selected { border-color: #0284c7;
                     background: rgba(2,132,199,0.06); }
     .photo-thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 6px;
-                   border: 1px solid #334155; background: #0b1220; }
+                   border: 1px solid #334155; background: #0b1220; cursor: pointer; }
+    .photo-thumb:hover { border-color: #0284c7; }
+    #mission-map { height: 320px; border-radius: 10px; z-index: 0; background: #0b1220;
+                   border: 1px solid #334155; }
+    .mission-log-panel { background: #0b1220; border: 1px solid #334155; border-radius: 10px;
+                         max-height: 280px; overflow-y: auto; padding: 10px 12px;
+                         font-size: 11px; line-height: 1.5; white-space: pre-wrap;
+                         word-break: break-word; }
+    .file-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0;
+                border-bottom: 1px solid #1e293b; font-size: 11px; }
+    .file-row a { color: #38bdf8; }
+    .file-row a:hover { text-decoration: underline; }
+    details.mission-section summary { cursor: pointer; user-select: none; }
+    /* ── Photo lightbox ── */
+    #lightbox { position: fixed; inset: 0; z-index: 200; background: rgba(2,6,23,0.92);
+                display: flex; align-items: center; justify-content: center; flex-direction: column;
+                gap: 10px; backdrop-filter: blur(4px); }
+    #lightbox.hidden { display: none; }
+    #lightbox img { max-width: 92vw; max-height: 82vh; border-radius: 8px;
+                    border: 1px solid #334155; }
+    .lb-btn { background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+              border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+    .lb-btn:hover { border-color: #0284c7; }
   </style>
   <style>
     /* ── Base ── */
@@ -663,24 +685,48 @@
     <div class="card flex flex-col">
       <div class="card-header flex items-center justify-between">
         <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Mission History</h2>
-        <button class="text-xs text-slate-500 hover:text-slate-300" onclick="ui.loadMissions()">↻ Refresh</button>
+        <div class="flex items-center gap-2">
+          <span id="mission-count" class="text-xs text-slate-600"></span>
+          <button class="text-xs text-slate-500 hover:text-slate-300" onclick="missionsUI.load()">↻ Refresh</button>
+        </div>
       </div>
-      <div id="mission-list" class="p-4 space-y-2 overflow-y-auto" style="max-height: 640px;">
+      <div class="px-4 pt-3">
+        <input id="mission-search" class="param-input" type="search"
+               placeholder="Search missions (name, date, reason)…" autocomplete="off" />
+      </div>
+      <div id="mission-list" class="p-4 space-y-2 overflow-y-auto" style="max-height: 620px;">
         <p class="text-xs text-slate-500">No missions recorded yet.</p>
       </div>
     </div>
 
     <!-- Mission detail -->
     <div class="card lg:col-span-2 flex flex-col">
-      <div class="card-header">
+      <div class="card-header flex items-center justify-between">
         <h2 class="text-xs font-bold uppercase tracking-widest text-slate-400">Mission Results</h2>
+        <div id="mission-actions" class="hidden items-center gap-2">
+          <a id="btn-mission-download" class="btn btn-primary" href="#">⬇ Download Mission</a>
+          <button id="btn-mission-delete" class="btn btn-danger">Delete</button>
+        </div>
       </div>
-      <div id="mission-detail" class="p-4 flex-1 overflow-y-auto" style="max-height: 640px;">
+      <div id="mission-detail" class="p-4 flex-1 overflow-y-auto" style="max-height: 760px;">
         <p class="text-xs text-slate-500">Select a mission to view its results.</p>
       </div>
     </div>
   </div>
 </div><!-- /tab-missions -->
+
+<!-- ══════════════════════════════════════════════════ PHOTO LIGHTBOX -->
+<div id="lightbox" class="hidden" onclick="missionsUI.closeLightbox(event)">
+  <img id="lightbox-img" src="" alt="Mission photo" />
+  <p id="lightbox-caption" class="text-xs text-slate-400"></p>
+  <div class="flex items-center gap-3">
+    <button class="lb-btn" onclick="missionsUI.lightboxStep(-1); event.stopPropagation();">← Prev</button>
+    <a id="lightbox-open" class="lb-btn" href="#" target="_blank"
+       onclick="event.stopPropagation();">Open full size</a>
+    <button class="lb-btn" onclick="missionsUI.lightboxStep(1); event.stopPropagation();">Next →</button>
+    <button class="lb-btn" onclick="missionsUI.closeLightbox()">✕ Close</button>
+  </div>
+</div>
 
 </main>
 
@@ -698,6 +744,7 @@
 </div>
 
 <script src="/static/js/app.js"></script>
+<script src="/static/js/missions.js"></script>
 <script src="/static/js/planning.js"></script>
 </body>
 </html>

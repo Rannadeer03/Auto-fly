@@ -4,11 +4,13 @@
  * DronAI — Planning & Mapping UI
  *
  * Owns the tab navigation, the Leaflet survey-planning map (polygon drawing,
- * grid generation, live drone marker), the mission history browser, and the
- * automatic mission-results display after a mission completes.
+ * grid generation, live drone marker), and the automatic switch to the
+ * Missions tab after a mission completes.
  *
  * The flight-control logic stays in app.js (class MissionPlanner, global
- * `app`); this module only reads app.lastTelemetry for the drone marker.
+ * `app`); the mission history browser lives in missions.js (global
+ * `missionsUI`). This module only reads app.lastTelemetry for the drone
+ * marker and delegates to missionsUI for history.
  */
 class PlanningUI {
   constructor() {
@@ -21,7 +23,6 @@ class PlanningUI {
     this.droneMarker = null;
     this.mapInitialised = false;
 
-    this.selectedMission = null;
     this._lastSessionActive = false;
     this._lastCompletedSeen = null;
   }
@@ -41,7 +42,7 @@ class PlanningUI {
       document.getElementById(`tabbtn-${t}`).classList.toggle('active', t === name);
     }
     if (name === 'planning') this._ensureMap();
-    if (name === 'missions') this.loadMissions();
+    if (name === 'missions') missionsUI.load();
   }
 
   // ══════════════════════════════════════════ MAP
@@ -264,106 +265,6 @@ class PlanningUI {
     if (icon) icon.style.transform = `rotate(${heading}deg)`;
   }
 
-  // ══════════════════════════════════════════ MISSION HISTORY & RESULTS
-
-  async loadMissions() {
-    try {
-      const res = await fetch('/missions');
-      const data = await res.json();
-      const list = document.getElementById('mission-list');
-      if (!data.missions.length) {
-        list.innerHTML = '<p class="text-xs text-slate-500">No missions recorded yet.</p>';
-        return;
-      }
-      list.innerHTML = '';
-      data.missions.forEach(m => {
-        const meta = m.metadata || {};
-        const div = document.createElement('div');
-        div.className = 'mission-item' + (this.selectedMission === m.name ? ' selected' : '');
-        div.innerHTML = `
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold text-sky-300">${this._esc(m.name)}</span>
-            <span class="text-xs text-slate-500">${m.photo_count} 📷${m.has_video ? ' · 🎥' : ''}</span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">
-            ${this._esc(meta.started_at || '')} — ${this._esc(meta.end_reason || 'in progress')}
-          </div>`;
-        div.addEventListener('click', () => this.showMissionDetail(m.name));
-        list.appendChild(div);
-      });
-    } catch (_) { /* backend unreachable */ }
-  }
-
-  async showMissionDetail(name) {
-    this.selectedMission = name;
-    this.loadMissions(); // refresh selection highlight
-    const panel = document.getElementById('mission-detail');
-    panel.innerHTML = '<p class="text-xs text-slate-500">Loading…</p>';
-    try {
-      const res = await fetch(`/missions/${encodeURIComponent(name)}`);
-      if (!res.ok) { panel.innerHTML = '<p class="text-xs text-red-400">Mission not found.</p>'; return; }
-      const d = await res.json();
-      const meta = d.metadata || {};
-      const photos = d.photos || [];
-      const base = `/missions-data/${encodeURIComponent(name)}`;
-
-      let html = `
-        <div class="space-y-4">
-          <div>
-            <p class="text-sm font-bold text-sky-300 mb-2">${this._esc(name)}</p>
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-x-6">
-              ${this._metaRow('Mission', meta.mission_name || '—')}
-              ${this._metaRow('Started', meta.started_at || '—')}
-              ${this._metaRow('Ended', meta.ended_at || '—')}
-              ${this._metaRow('End Reason', meta.end_reason || '—')}
-              ${this._metaRow('Photos', meta.photos_captured ?? d.photo_count)}
-              ${this._metaRow('Capture Mode', meta.capture_mode || '—')}
-            </div>
-          </div>`;
-
-      if (d.has_video) {
-        html += `
-          <div>
-            <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Video</p>
-            <video controls preload="metadata" class="w-full rounded-lg border border-slate-700" style="max-height:300px;">
-              <source src="${base}/video.mp4" type="video/mp4">
-            </video>
-          </div>`;
-      }
-
-      if (photos.length) {
-        const thumbs = photos.slice(0, 24).map(p => `
-          <a href="${base}/${p.file}" target="_blank" title="${p.latitude.toFixed(6)}, ${p.longitude.toFixed(6)} @ ${p.altitude_rel.toFixed(1)}m">
-            <img class="photo-thumb" loading="lazy" src="${base}/${p.file}">
-          </a>`).join('');
-        html += `
-          <div>
-            <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">
-              Mapping Photos (${photos.length} geotagged${photos.length > 24 ? ', showing 24' : ''})
-            </p>
-            <div class="grid grid-cols-3 md:grid-cols-4 gap-2">${thumbs}</div>
-          </div>`;
-      }
-
-      html += `
-        <div class="flex gap-3 pt-1">
-          <a class="text-xs text-sky-400 hover:underline" href="${base}/telemetry.json" target="_blank">telemetry.json</a>
-          <a class="text-xs text-sky-400 hover:underline" href="${base}/mission.json" target="_blank">mission.json</a>
-          <a class="text-xs text-sky-400 hover:underline" href="${base}/metadata.json" target="_blank">metadata.json</a>
-          <a class="text-xs text-sky-400 hover:underline" href="${base}/mapping/photos.json" target="_blank">mapping/photos.json</a>
-        </div>
-      </div>`;
-      panel.innerHTML = html;
-    } catch (err) {
-      panel.innerHTML = `<p class="text-xs text-red-400">Failed to load mission: ${this._esc(err.message)}</p>`;
-    }
-  }
-
-  _metaRow(label, value) {
-    return `<div class="tele-row"><span class="tele-label">${label}</span>
-            <span class="tele-value">${this._esc(String(value))}</span></div>`;
-  }
-
   // ── Auto-display results when a mission finishes ────────────────
 
   async _watchSession() {
@@ -378,8 +279,7 @@ class PlanningUI {
         this._lastCompletedSeen = s.last_completed;
         app.showToast(`Mission complete — ${s.last_completed}`, 'success');
         this.showTab('missions');
-        await this.loadMissions();
-        this.showMissionDetail(s.last_completed);
+        missionsUI.open(s.last_completed);
       } else if (s.last_completed) {
         // Remember completions we didn't witness so we don't replay them later.
         if (this._lastCompletedSeen === null) this._lastCompletedSeen = s.last_completed;
