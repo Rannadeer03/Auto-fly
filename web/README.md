@@ -1,32 +1,55 @@
-# React + TypeScript + Vite
+# Vayuraksha Mission Planner
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The web-based Ground Control Station for the DronAI Raspberry Pi drone
+computer (see `../server`). Draw a farm boundary, get a fully-generated
+survey mission — waypoints, camera footprint, overlaps, flight time, and
+battery estimate — with no QGroundControl required, then fly it and browse
+the results (photos, metadata, flight replay) when it's done.
 
-Currently, two official plugins are available:
+React 19 + TypeScript + Vite + Tailwind v4, feature-based architecture
+(`src/features/*`), MapLibre GL for mapping.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Development
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev       # http://localhost:5173, talks to a backend on :8000
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+CORS is already permissive on the backend (`server/main.py`) for this. To
+point dev at a real Pi instead of `localhost:8000`, copy `.env.example` to
+`.env` and set `VITE_API_BASE_URL`.
+
+## Production build
+
+```bash
+npm run build      # -> dist/
+```
+
+`server/main.py` serves `dist/` directly as a static SPA shell — there is
+no separate frontend deployment step beyond building before (re)starting
+the server (see `server/deploy/install.sh`).
+
+## Higher-resolution satellite imagery
+
+The default basemap (Esri World Imagery) tops out around z19 native
+resolution in most regions, which is why very close zoom looks upscaled/
+blurry rather than sharp — that's an imagery-provider limit, not a bug.
+See `.env.example` for how to plug in a licensed higher-zoom provider
+(MapTiler Satellite, Mapbox Satellite, etc.) with no code changes.
+
+## Project layout
+
+```
+src/
+  components/   shared UI primitives (button, panel, dialog, ...) and layout
+  features/     one folder per domain: map, survey, telemetry,
+                mission-execution, mission-history, camera
+  hooks/        cross-feature React Query hooks (telemetry, health, ...)
+  pages/        route-level components composed from features
+  services/     typed fetch wrappers around the backend API
+  store/        Zustand stores (UI state, mission draft)
+  types/        TypeScript types mirroring the backend's Pydantic models
+  constants/    map/tile config, MAVLink command IDs, polling intervals
+  utils/        geo math, formatting, class-name helpers
+```
