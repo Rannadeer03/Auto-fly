@@ -21,7 +21,6 @@ can read them.  Never call master.recv_match() directly.
 import logging
 import queue
 import time
-from typing import Optional
 
 from pymavlink import mavutil
 

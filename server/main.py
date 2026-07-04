@@ -12,18 +12,22 @@ Start manually with:
 """
 import logging
 import threading
-import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from api import camera, commands, connect, mission, missions, telemetry
 from config import BASE_DIR, settings
 from services.log_service import log_service
+
+# Vite build output (cd web && npm run build). The React app never uses
+# client-side path routing — all in-app navigation is state-driven, not
+# URL-driven — specifically so "/" is the only page route and it can never
+# collide with an API path (e.g. GET /missions) served by the same origin.
+WEB_DIST = BASE_DIR.parent / "web" / "dist"
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +134,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount(
-    "/static",
-    StaticFiles(directory=str(BASE_DIR / "static")),
-    name="static",
-)
+if (WEB_DIST / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=str(WEB_DIST / "assets")), name="frontend-assets")
 
 # Mission outputs (photos, video, mapping data) — browsable by the frontend.
 settings.MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -143,8 +144,6 @@ app.mount(
     StaticFiles(directory=str(settings.MISSIONS_DIR)),
     name="missions-data",
 )
-
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 
@@ -157,9 +156,18 @@ app.include_router(missions.router)
 
 # ── Core routes ────────────────────────────────────────────────────────────────
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+@app.get("/", include_in_schema=False)
+async def index():
+    """Serve the built React SPA shell. No templating — it's a static build."""
+    index_file = WEB_DIST / "index.html"
+    if not index_file.is_file():
+        return HTMLResponse(
+            "<h1>Frontend not built</h1>"
+            "<p>Run <code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code>, "
+            "then restart the server.</p>",
+            status_code=503,
+        )
+    return FileResponse(index_file)
 
 
 @app.get("/health")

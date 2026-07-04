@@ -89,9 +89,27 @@ class Settings:
     # Lens field of view — used for mapping footprint / overlap calculations.
     CAMERA_HFOV_DEG: float = float(os.environ.get("CAMERA_HFOV_DEG", "62.2"))
     CAMERA_VFOV_DEG: float = float(os.environ.get("CAMERA_VFOV_DEG", "48.8"))
+    # Fixed camera mounting angle in degrees from horizontal (-90 = straight
+    # down / nadir). There is no gimbal on this rig, so this is a static
+    # per-mission descriptive value recorded into each photo's metadata, not
+    # something measured dynamically per shot.
+    CAMERA_PITCH_DEG: float = float(os.environ.get("CAMERA_PITCH_DEG", "-90.0"))
 
     # ── Mission automation ─────────────────────────────────────────────────────
-    # Continuous photo capture during flight for mapping.
+    # Top-level capture strategy for survey missions:
+    #   "hover"      — mandatory Position Hold at every survey waypoint, then
+    #                  capture exactly one photo, then continue (default —
+    #                  services/capture_strategies.py:HoverCaptureStrategy)
+    #   "continuous" — drone never stops; photos are triggered by distance or
+    #                  time while flying (services/capture_strategies.py:
+    #                  ContinuousCaptureStrategy). Reserved for future use.
+    CAPTURE_STRATEGY: str = os.environ.get("CAPTURE_STRATEGY", "hover")
+    # Hold duration (seconds) ArduCopter loiters at each survey waypoint
+    # before auto-continuing, applied as MAV_CMD_NAV_WAYPOINT param1.
+    HOVER_HOLD_TIME_S: float = float(os.environ.get("HOVER_HOLD_TIME_S", "1.0"))
+
+    # Continuous-mode capture sub-settings (only used when
+    # CAPTURE_STRATEGY == "continuous").
     #   "distance" — one photo every PHOTO_DISTANCE_M metres of travel
     #   "time"     — one photo every PHOTO_INTERVAL_S seconds
     PHOTO_CAPTURE_MODE: str = os.environ.get("PHOTO_CAPTURE_MODE", "distance")

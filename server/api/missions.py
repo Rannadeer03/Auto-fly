@@ -1,6 +1,7 @@
 """API routes for mission planning, stored mission data, and the active
 mission automation session."""
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -32,9 +33,17 @@ class GridRequest(BaseModel):
     front_overlap_pct: float = Field(default_factory=lambda: settings.DEFAULT_FRONT_OVERLAP_PCT)
     angle_deg: float = Field(default_factory=lambda: settings.DEFAULT_GRID_ANGLE_DEG)
     upload: bool = Field(True, description="Upload to the Pixhawk if connected")
-    # Explicit camera interval override; when omitted, the photo spacing
-    # derived from the front overlap is applied to the mission capture.
+    # Explicit camera interval override (continuous mode only); when omitted,
+    # the photo spacing derived from the front overlap is applied.
     photo_distance_m: Optional[float] = Field(None, gt=0)
+    # Capture strategy override — defaults to settings.CAPTURE_STRATEGY ("hover").
+    capture_mode: Optional[str] = Field(None, pattern="^(hover|continuous)$")
+    # Hover-mode hold time override (seconds), defaults to settings.HOVER_HOLD_TIME_S.
+    hold_time_s: Optional[float] = Field(None, ge=0, le=30)
+    # Display name from the flight-parameters panel; becomes the mission filename.
+    mission_name: Optional[str] = Field(None, max_length=120)
+    # Fixed camera mounting angle override (degrees from horizontal, -90=nadir).
+    camera_angle_deg: Optional[float] = Field(None, ge=-90, le=0)
 
 
 class GridResponse(UploadResponse):
@@ -44,6 +53,15 @@ class GridResponse(UploadResponse):
 @router.post("/mission/generate", response_model=GridResponse)
 async def generate_mission(body: GridRequest) -> GridResponse:
     """Generate a lawnmower survey mission from a polygon and upload it."""
+    # Capture-strategy overrides apply for the duration of this generation
+    # (and the mission session it produces) — explicit request values win,
+    # otherwise the server defaults are used.
+    settings.CAPTURE_STRATEGY = body.capture_mode or settings.CAPTURE_STRATEGY
+    if body.hold_time_s is not None:
+        settings.HOVER_HOLD_TIME_S = body.hold_time_s
+    if body.camera_angle_deg is not None:
+        settings.CAMERA_PITCH_DEG = body.camera_angle_deg
+
     try:
         polygon = [(float(p[0]), float(p[1])) for p in body.polygon]
         params = GridParams(
@@ -56,19 +74,27 @@ async def generate_mission(body: GridRequest) -> GridResponse:
         home = None
         if drone_state.connected and (drone_state.latitude or drone_state.longitude):
             home = (drone_state.latitude, drone_state.longitude)
-        mission, plan_info = generate_grid_mission(polygon, params, home=home)
+        safe_name = (
+            re.sub(r"[^\w\-]", "_", body.mission_name.strip())[:120]
+            if body.mission_name and body.mission_name.strip()
+            else None
+        )
+        mission, plan_info = generate_grid_mission(
+            polygon, params, home=home, mission_name=safe_name
+        )
     except GridPlanError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except (ValueError, TypeError, IndexError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid polygon data: {exc}")
 
-    # Apply the mapping capture interval to the mission runner: explicit
-    # override wins, otherwise the overlap-derived photo spacing is used.
-    applied_distance = float(body.photo_distance_m or plan_info["photo_spacing_m"])
-    settings.PHOTO_CAPTURE_MODE = "distance"
-    settings.PHOTO_DISTANCE_M = applied_distance
-    plan_info["applied_photo_distance_m"] = round(applied_distance, 2)
-    logger.info("Mission photo capture set to every %.1f m.", applied_distance)
+    if settings.CAPTURE_STRATEGY == "continuous":
+        # Apply the mapping capture interval to the mission runner: explicit
+        # override wins, otherwise the overlap-derived photo spacing is used.
+        applied_distance = float(body.photo_distance_m or plan_info["photo_spacing_m"])
+        settings.PHOTO_CAPTURE_MODE = "distance"
+        settings.PHOTO_DISTANCE_M = applied_distance
+        plan_info["applied_photo_distance_m"] = round(applied_distance, 2)
+        logger.info("Mission photo capture set to every %.1f m.", applied_distance)
 
     uploaded = False
     verified = False
@@ -112,12 +138,17 @@ async def get_planning_config() -> dict:
         "side_overlap_pct": settings.DEFAULT_SIDE_OVERLAP_PCT,
         "front_overlap_pct": settings.DEFAULT_FRONT_OVERLAP_PCT,
         "grid_angle_deg": settings.DEFAULT_GRID_ANGLE_DEG,
+        "capture_mode": settings.CAPTURE_STRATEGY,
+        "hover_hold_time_s": settings.HOVER_HOLD_TIME_S,
         "photo_capture_mode": settings.PHOTO_CAPTURE_MODE,
         "photo_distance_m": settings.PHOTO_DISTANCE_M,
         "photo_interval_s": settings.PHOTO_INTERVAL_S,
         "recording_enabled": settings.RECORDING_ENABLED,
         "camera_hfov_deg": settings.CAMERA_HFOV_DEG,
         "camera_vfov_deg": settings.CAMERA_VFOV_DEG,
+        "camera_width_px": settings.CAMERA_WIDTH,
+        "camera_height_px": settings.CAMERA_HEIGHT,
+        "camera_pitch_deg": settings.CAMERA_PITCH_DEG,
     }
 
 
@@ -140,8 +171,10 @@ async def list_missions(q: str = "") -> dict:
 
 @router.get("/missions/{name}")
 async def mission_detail(name: str) -> dict:
-    """Full detail for one stored mission: metadata, geotagged photo index,
-    executed plan, file index, and telemetry-derived flight statistics."""
+    """Full detail for one stored mission: metadata, the full per-image
+    metadata array (position, attitude, waypoint, GPS fix, etc. — see
+    services/storage_service.py:IMAGE_METADATA_FIELDS), executed plan, file
+    index, and telemetry-derived flight statistics."""
     detail = storage_service.get_mission_detail(name)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Mission '{name}' not found.")

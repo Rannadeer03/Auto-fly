@@ -3,18 +3,19 @@
 Coordinates the camera and storage services with MAVLink mission execution:
 
   • When a mission starts (POST /start succeeds) a mission session begins:
-      - an isolated mission folder is created (missions/mission_<timestamp>/)
+      - an isolated mission folder is created: missions/<Mission_Name>_<timestamp>/
       - video recording starts automatically (if RECORDING_ENABLED)
       - the executed flight plan is saved as mission.json
       - a per-mission log file starts (logs/mission.log)
-  • During the mission the drone flies normally — it is NEVER paused.
-    A monitor thread continuously captures photos for mapping, either every
-    PHOTO_DISTANCE_M metres of travel or every PHOTO_INTERVAL_S seconds
-    (PHOTO_CAPTURE_MODE), geotagging each photo from live telemetry into
-    mapping/photos.json. Telemetry is sampled into telemetry.json.
+  • A monitor thread drives photo capture via a pluggable CaptureStrategy
+    (services/capture_strategies.py). By default (CAPTURE_STRATEGY="hover")
+    each survey waypoint holds position until the vehicle is confirmed
+    stable (or a bounded max-wait elapses), then exactly one photo is taken.
+    Every captured photo's full metadata (position, attitude, waypoint,
+    GPS fix, etc.) is accumulated in memory during the flight.
   • When the mission finishes (vehicle disarms, or connection is lost),
-    recording stops and telemetry.json / mapping/photos.json / metadata.json
-    are written.
+    recording stops and telemetry.json / metadata.json / metadata.csv are
+    written.
 
 Every camera/storage failure is contained: a failed photo never aborts the
 mission.
@@ -25,12 +26,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from config import settings
 from mavlink.connection import drone_state
-from parser.waypoint_parser import haversine_m
-from services.camera_service import camera_service
+from services.capture_strategies import CaptureStrategy, build_capture_strategy
 from services.recording_service import recording_service
 from services.storage_service import MissionStorage, storage_service, utc_now_iso
 
@@ -50,7 +51,7 @@ class MissionRunner:
         self._storage: Optional[MissionStorage] = None
         self._mission_name: str = ""
         self._started_at: Optional[str] = None
-        self._photos_captured = 0
+        self._strategy: Optional[CaptureStrategy] = None
         self._end_reason: str = ""
         self._log_handler: Optional[logging.Handler] = None
         self._last_completed: Optional[str] = None  # folder name of last finished session
@@ -58,16 +59,23 @@ class MissionRunner:
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def on_mission_started(self, mission_name: str = "", mission_dict: Optional[dict] = None) -> None:
-        """Begin a mission session. Called right after AUTO mode is confirmed."""
+        """Begin a mission session. Called right after AUTO mode is confirmed.
+
+        *mission_name* is the mission's filename (e.g. "North_Field.plan" or
+        an uploaded "survey.waypoints") — the extension is stripped to get
+        the human-readable label used both in metadata and as the basis for
+        the mission folder name (missions/<label>_<timestamp>/).
+        """
+        clean_name = Path(mission_name).stem if mission_name else ""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 logger.warning("Mission session already active — ignoring new start.")
                 return
 
-            self._mission_name = mission_name
-            self._storage = storage_service.create_mission_storage()
+            self._mission_name = clean_name
+            self._storage = storage_service.create_mission_storage(mission_name=clean_name)
             self._started_at = utc_now_iso()
-            self._photos_captured = 0
+            self._strategy = build_capture_strategy(mission_dict)
             self._end_reason = ""
 
             self._attach_mission_log(self._storage)
@@ -90,11 +98,8 @@ class MissionRunner:
             self._thread.start()
 
         logger.info(
-            "Mission session started: %s (folder=%s, capture=%s)",
-            mission_name or "<unnamed>", self._storage.name,
-            f"{settings.PHOTO_CAPTURE_MODE} "
-            + (f"{settings.PHOTO_DISTANCE_M}m" if settings.PHOTO_CAPTURE_MODE == "distance"
-               else f"{settings.PHOTO_INTERVAL_S}s"),
+            "Mission session started: %s (folder=%s, capture_strategy=%s)",
+            clean_name or "<unnamed>", self._storage.name, settings.CAPTURE_STRATEGY,
         )
 
     def stop_session(self, reason: str = "manual stop") -> bool:
@@ -116,13 +121,16 @@ class MissionRunner:
     def get_status(self) -> dict:
         with self._lock:
             active = self._thread is not None and self._thread.is_alive()
+            photos = self._strategy.photos_captured if active and self._strategy else 0
+            failed = self._strategy.failed_captures if active and self._strategy else 0
             return {
                 "active": active,
                 "mission_folder": self._storage.name if active and self._storage else None,
                 "started_at": self._started_at if active else None,
-                "photos_captured": self._photos_captured if active else 0,
+                "photos_captured": photos,
+                "failed_captures": failed,
                 "recording": recording_service.is_recording,
-                "capture_mode": settings.PHOTO_CAPTURE_MODE,
+                "capture_mode": settings.CAPTURE_STRATEGY,
                 "last_completed": self._last_completed,
             }
 
@@ -130,13 +138,10 @@ class MissionRunner:
 
     def _monitor(self) -> None:
         storage = self._storage
+        strategy = self._strategy
         last_telemetry_ts = 0.0
         was_armed = drone_state.armed
         arm_grace_deadline = time.monotonic() + 30.0  # allow start before arming settles
-
-        # Continuous-capture state
-        last_photo_ts = 0.0
-        last_photo_pos: Optional[tuple[float, float]] = None
 
         try:
             while not self._stop_event.is_set():
@@ -149,12 +154,8 @@ class MissionRunner:
                     sample["timestamp"] = utc_now_iso()
                     storage.append_telemetry(sample)
 
-                # ── Continuous photo capture (never pauses the drone) ──────────
-                if self._should_capture(now, last_photo_ts, last_photo_pos):
-                    if self._capture_photo(storage):
-                        last_photo_ts = now
-                        if drone_state.latitude or drone_state.longitude:
-                            last_photo_pos = (drone_state.latitude, drone_state.longitude)
+                # ── Photo capture (delegated to the active CaptureStrategy) ─────
+                strategy.tick(now, storage)
 
                 # ── Completion detection ───────────────────────────────────────
                 if drone_state.armed:
@@ -175,41 +176,6 @@ class MissionRunner:
             self._end_reason = self._end_reason or "monitor error"
         finally:
             self._finalise(storage)
-
-    def _should_capture(
-        self,
-        now: float,
-        last_photo_ts: float,
-        last_photo_pos: Optional[tuple[float, float]],
-    ) -> bool:
-        if settings.CAPTURE_ONLY_IN_AUTO:
-            if not drone_state.armed or drone_state.flight_mode.upper() != "AUTO":
-                return False
-
-        if settings.PHOTO_CAPTURE_MODE == "time":
-            return now - last_photo_ts >= settings.PHOTO_INTERVAL_S
-
-        # Distance mode: capture when the drone has moved PHOTO_DISTANCE_M
-        # since the last photo. Falls back to first-fix capture once a GPS
-        # position exists.
-        lat, lon = drone_state.latitude, drone_state.longitude
-        if lat == 0.0 and lon == 0.0:
-            return False
-        if last_photo_pos is None:
-            return True
-        moved = haversine_m(last_photo_pos[0], last_photo_pos[1], lat, lon)
-        return moved >= settings.PHOTO_DISTANCE_M
-
-    def _capture_photo(self, storage: MissionStorage) -> bool:
-        try:
-            path = storage.next_photo_path(self._photos_captured + 1)
-            if camera_service.capture_photo(path):
-                storage.record_photo(path, drone_state.snapshot())
-                self._photos_captured += 1
-                return True
-        except Exception:
-            logger.exception("Continuous photo capture failed")
-        return False
 
     # ── Per-mission log file ───────────────────────────────────────────────────
 
@@ -249,8 +215,10 @@ class MissionRunner:
         try:
             storage.flush()
         except Exception:
-            logger.exception("Failed to write telemetry.json / mapping/photos.json")
+            logger.exception("Failed to write telemetry.json")
 
+        photos_captured = self._strategy.photos_captured if self._strategy else 0
+        failed_captures = self._strategy.failed_captures if self._strategy else 0
         try:
             storage.write_metadata(
                 {
@@ -260,9 +228,12 @@ class MissionRunner:
                     "ended_at": utc_now_iso(),
                     "end_reason": reason,
                     "waypoints_total": drone_state.waypoint_count,
-                    "photos_captured": self._photos_captured,
+                    "photos_captured": photos_captured,
+                    "failed_captures": failed_captures,
                     "video_file": storage.video_path.name if storage.video_path.exists() else None,
-                    "capture_mode": settings.PHOTO_CAPTURE_MODE,
+                    "capture_mode": settings.CAPTURE_STRATEGY,
+                    "hover_hold_time_s": settings.HOVER_HOLD_TIME_S,
+                    "camera_orientation_deg": settings.CAMERA_PITCH_DEG,
                     "photo_distance_m": settings.PHOTO_DISTANCE_M,
                     "photo_interval_s": settings.PHOTO_INTERVAL_S,
                     "recording_enabled": settings.RECORDING_ENABLED,
@@ -272,8 +243,8 @@ class MissionRunner:
             logger.exception("Failed to write metadata.json")
 
         logger.info(
-            "Mission session complete: %s (%d photos)",
-            storage.name, self._photos_captured,
+            "Mission session complete: %s (%d photos, %d failed captures)",
+            storage.name, photos_captured, failed_captures,
         )
         self._detach_mission_log()
 

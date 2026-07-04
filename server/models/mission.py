@@ -18,6 +18,10 @@ class WaypointItem(BaseModel):
     longitude: float
     altitude: float
     autocontinue: bool
+    # True for survey waypoints that must trigger a photo capture. Set by
+    # grid_planner in "hover" capture mode (param1 also carries the hold
+    # time, honoured natively by ArduCopter for MAV_CMD_NAV_WAYPOINT).
+    is_capture_point: bool = False
 
 
 class Mission(BaseModel):

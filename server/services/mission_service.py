@@ -16,7 +16,7 @@ from typing import Optional
 
 from config import settings
 from mavlink.connection import connection, drone_state
-from mavlink.mission_upload import MissionUploader, MissionUploadError
+from mavlink.mission_upload import MissionUploader
 from models.mission import Mission
 from parser.loader import load_mission
 from parser.waypoint_parser import WaypointParseError

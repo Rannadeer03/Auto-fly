@@ -37,26 +37,24 @@ class HealthChecker:
         elif not state.heartbeat_ok:
             failures.append(f"Heartbeat lost ({state.last_heartbeat_ago_s:.1f}s ago).")
 
-        # Disabled all arming checks per user request
-        # if state.battery_voltage > 0 and state.battery_voltage < settings.MIN_BATTERY_VOLTAGE:
-        #     failures.append(
-        #         f"Battery voltage {state.battery_voltage:.1f}V below minimum {settings.MIN_BATTERY_VOLTAGE}V."
-        #     )
-        # if state.battery_remaining not in (-1,) and state.battery_remaining < settings.MIN_BATTERY_PERCENT:
-        #     failures.append(
-        #         f"Battery {state.battery_remaining}% below minimum {settings.MIN_BATTERY_PERCENT}%."
-        #     )
-        # if state.gps_fix_type < settings.REQUIRED_GPS_FIX:
-        #     failures.append(
-        #         f"GPS fix type {state.gps_fix_type} insufficient (need ≥{settings.REQUIRED_GPS_FIX})."
-        #     )
-        # if state.gps_satellites < settings.MIN_GPS_SATELLITES:
-        #     failures.append(
-        #         f"Only {state.gps_satellites} GPS satellites (need ≥{settings.MIN_GPS_SATELLITES})."
-        #     )
-        # if not state.mission_uploaded:
-        #     failures.append("No mission loaded on vehicle.")
-
+        if state.battery_voltage > 0 and state.battery_voltage < settings.MIN_BATTERY_VOLTAGE:
+            failures.append(
+                f"Battery voltage {state.battery_voltage:.1f}V below minimum {settings.MIN_BATTERY_VOLTAGE}V."
+            )
+        if state.battery_remaining not in (-1,) and state.battery_remaining < settings.MIN_BATTERY_PERCENT:
+            failures.append(
+                f"Battery {state.battery_remaining}% below minimum {settings.MIN_BATTERY_PERCENT}%."
+            )
+        if state.gps_fix_type < settings.REQUIRED_GPS_FIX:
+            failures.append(
+                f"GPS fix type {state.gps_fix_type} insufficient (need ≥{settings.REQUIRED_GPS_FIX})."
+            )
+        if state.gps_satellites < settings.MIN_GPS_SATELLITES:
+            failures.append(
+                f"Only {state.gps_satellites} GPS satellites (need ≥{settings.MIN_GPS_SATELLITES})."
+            )
+        if not state.mission_uploaded:
+            failures.append("No mission loaded on vehicle.")
 
         if failures:
             logger.warning("ARM pre-check failed: %s", " | ".join(failures))
@@ -69,14 +67,14 @@ class HealthChecker:
 
         if not state.armed:
             failures.append("Drone is not armed.")
-        # if not state.mission_uploaded:
-        #     failures.append("No mission loaded on vehicle.")
-        # if state.waypoint_count < 1:
-        #     failures.append("Mission has no waypoints.")
-        # if not state.ekf_ok:
-        #     failures.append("EKF not healthy — check sensors.")
-        # if state.gps_fix_type < settings.REQUIRED_GPS_FIX:
-        #     failures.append(f"GPS fix type {state.gps_fix_type} insufficient.")
+        if not state.mission_uploaded:
+            failures.append("No mission loaded on vehicle.")
+        if state.waypoint_count < 1:
+            failures.append("Mission has no waypoints.")
+        if not state.ekf_ok:
+            failures.append("EKF not healthy — check sensors.")
+        if state.gps_fix_type < settings.REQUIRED_GPS_FIX:
+            failures.append(f"GPS fix type {state.gps_fix_type} insufficient.")
         if not state.heartbeat_ok:
             failures.append("Heartbeat lost.")
 

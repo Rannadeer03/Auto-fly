@@ -38,7 +38,7 @@ import logging
 from pathlib import Path
 
 from models.mission import Mission, WaypointItem
-from parser.waypoint_parser import WaypointParseError, haversine_m, _path_distance_m
+from parser.waypoint_parser import WaypointParseError, _path_distance_m
 
 logger = logging.getLogger(__name__)
 

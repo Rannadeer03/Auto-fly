@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SERVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WEB_DIR="$(dirname "$SERVER_DIR")/web"
 SERVICE_FILE="$SERVER_DIR/deploy/dronai.service"
 RUN_USER="${SUDO_USER:-$(whoami)}"
 
@@ -17,7 +18,7 @@ echo "==> Installing DronAI from $SERVER_DIR (user: $RUN_USER)"
 # ── System packages ────────────────────────────────────────────────────────────
 echo "==> Installing system packages"
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-dev v4l-utils network-manager
+sudo apt-get install -y python3-venv python3-dev v4l-utils network-manager nodejs npm
 
 # ── Wi-Fi auto-connect (values come from server/config.py) ─────────────────────
 WIFI_SSID="$(python3 -c "import sys; sys.path.insert(0,'$SERVER_DIR'); from config import settings; print(settings.WIFI_SSID)")"
@@ -65,6 +66,15 @@ cd "$SERVER_DIR"
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
+
+# ── Frontend build (Vayuraksha Mission Planner, served as a static SPA) ────────
+echo "==> Building the mission-planner frontend"
+if [ -d "$WEB_DIR" ]; then
+    (cd "$WEB_DIR" && npm install && npm run build)
+else
+    echo "    WARNING: $WEB_DIR not found — skipping frontend build. The server will"
+    echo "    return a 'frontend not built' placeholder at / until this is fixed."
+fi
 
 # ── systemd service ────────────────────────────────────────────────────────────
 echo "==> Installing systemd service"

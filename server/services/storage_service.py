@@ -1,26 +1,29 @@
 """Mission storage service.
 
 Owns the on-disk layout of recorded missions. Every mission is completely
-isolated in its own folder:
+isolated in its own folder, named `<sanitized_mission_name>_<timestamp>`
+(or `mission_<timestamp>` when no name was given):
 
     missions/
-        mission_<YYYYMMDD_HHMMSS>/
+        <Mission_Name>_<YYYYMMDD_HHMMSS>/
             video.mp4
-            photos/
+            images/
                 photo_00001.jpg
+                thumbs/
+                    photo_00001_thumb.jpg
                 ...
             logs/
                 mission.log
             telemetry.json
-            metadata.json
+            metadata.json         # mission summary + full per-image metadata
+            metadata.csv          # per-image metadata, flattened
             mission.json          # the flight plan that was executed
             index.json            # auto-generated file index + flight stats
-            mapping/
-                photos.json       # per-photo geotags for map stitching
 """
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import logging
@@ -34,10 +37,35 @@ from typing import Iterator, Optional
 
 from config import settings
 
-# Folder names created by create_mission_storage(): mission_<ts> or mission_<ts>_<n>
-_MISSION_NAME_RE = re.compile(r"^mission_\d{8}_\d{6}(_\d+)?$")
+# Folder names created by create_mission_storage(): safe characters only,
+# always ending in _<8 digit date>_<6 digit time> (optionally _<n> for
+# same-second collisions) — this is what resolve_mission_root() validates
+# against, so path traversal through the API is impossible.
+_MISSION_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+_\d{8}_\d{6}(_\d+)?$")
 
 _ZIP_CHUNK_BYTES = 512 * 1024
+
+# Per-image metadata.csv column order — kept explicit (rather than "whatever
+# dict.keys() happens to be") so the CSV header never reorders between runs.
+IMAGE_METADATA_FIELDS = [
+    "filename",
+    "mission_name",
+    "mission_id",
+    "timestamp",
+    "latitude",
+    "longitude",
+    "altitude_rel",
+    "altitude_msl",
+    "heading_deg",
+    "pitch_deg",
+    "roll_deg",
+    "camera_orientation_deg",
+    "waypoint_number",
+    "capture_sequence",
+    "drone_speed_ms",
+    "gps_fix_quality",
+    "satellites_visible",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +73,26 @@ logger = logging.getLogger(__name__)
 class MissionStorage:
     """Handle to a single mission's folder."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, mission_id: str, mission_name: str) -> None:
         self.root = root
-        self.photos_dir = root / "photos"
+        self.mission_id = mission_id
+        self.mission_name = mission_name
+
+        self.images_dir = root / "images"
+        self.thumbs_dir = self.images_dir / "thumbs"
         self.logs_dir = root / "logs"
-        self.mapping_dir = root / "mapping"
         self.video_path = root / "video.mp4"
         self.telemetry_path = root / "telemetry.json"
-        self.metadata_path = root / "metadata.json"
+        self.metadata_json_path = root / "metadata.json"
+        self.metadata_csv_path = root / "metadata.csv"
         self.mission_path = root / "mission.json"
-        self.photo_index_path = self.mapping_dir / "photos.json"
         self.log_path = self.logs_dir / "mission.log"
 
         self._lock = threading.Lock()
         self._telemetry_samples: list[dict] = []
-        self._photo_records: list[dict] = []
+        self._image_records: list[dict] = []
 
-        for d in (self.root, self.photos_dir, self.logs_dir, self.mapping_dir):
+        for d in (self.root, self.images_dir, self.thumbs_dir, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -69,21 +100,46 @@ class MissionStorage:
         return self.root.name
 
     def next_photo_path(self, photo_number: int) -> Path:
-        return self.photos_dir / f"photo_{photo_number:05d}.jpg"
+        return self.images_dir / f"photo_{photo_number:05d}.jpg"
 
-    def record_photo(self, path: Path, telemetry: dict) -> None:
-        """Store a geotag record for a captured photo (used for mapping)."""
+    def thumb_path_for(self, photo_path: Path) -> Path:
+        return self.thumbs_dir / f"{photo_path.stem}_thumb.jpg"
+
+    def record_photo(
+        self,
+        path: Path,
+        telemetry: dict,
+        *,
+        waypoint_number: int,
+        capture_sequence: int,
+        camera_orientation_deg: float,
+    ) -> None:
+        """Store full metadata for one captured photo (used for mapping,
+        the frontend gallery, and metadata.json/metadata.csv)."""
+        from mavlink.connection import GPS_FIX_NAMES  # local import avoids a cycle
+
         with self._lock:
-            self._photo_records.append(
+            self._image_records.append(
                 {
-                    "file": f"photos/{path.name}",
+                    "filename": f"images/{path.name}",
+                    "mission_name": self.mission_name,
+                    "mission_id": self.mission_id,
                     "timestamp": utc_now_iso(),
                     "latitude": telemetry.get("latitude", 0.0),
                     "longitude": telemetry.get("longitude", 0.0),
                     "altitude_rel": telemetry.get("altitude_rel", 0.0),
                     "altitude_msl": telemetry.get("altitude_msl", 0.0),
-                    "heading": telemetry.get("heading", 0),
-                    "ground_speed": telemetry.get("ground_speed", 0.0),
+                    "heading_deg": telemetry.get("yaw", 0.0),
+                    "pitch_deg": telemetry.get("pitch", 0.0),
+                    "roll_deg": telemetry.get("roll", 0.0),
+                    "camera_orientation_deg": camera_orientation_deg,
+                    "waypoint_number": waypoint_number,
+                    "capture_sequence": capture_sequence,
+                    "drone_speed_ms": telemetry.get("ground_speed", 0.0),
+                    "gps_fix_quality": GPS_FIX_NAMES.get(
+                        telemetry.get("gps_fix_type", 0), "Unknown"
+                    ),
+                    "satellites_visible": telemetry.get("gps_satellites", 0),
                 }
             )
 
@@ -98,21 +154,33 @@ class MissionStorage:
         )
 
     def flush(self) -> None:
-        """Write telemetry.json and mapping/photos.json to disk."""
+        """Write telemetry.json to disk."""
         with self._lock:
             samples = list(self._telemetry_samples)
-            photos = list(self._photo_records)
         self.telemetry_path.write_text(json.dumps(samples, indent=2))
-        self.photo_index_path.write_text(json.dumps(photos, indent=2))
 
-    def write_metadata(self, metadata: dict) -> None:
-        self.metadata_path.write_text(json.dumps(metadata, indent=2, default=str))
-        logger.info("Mission metadata written: %s", self.metadata_path)
+    def write_metadata(self, summary: dict) -> None:
+        """Write metadata.json (summary + full per-image array) and
+        metadata.csv (per-image rows only) — called once, at mission end."""
+        with self._lock:
+            images = list(self._image_records)
+
+        payload = {**summary, "mission_id": self.mission_id, "images": images}
+        self.metadata_json_path.write_text(json.dumps(payload, indent=2, default=str))
+
+        with self.metadata_csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=IMAGE_METADATA_FIELDS)
+            writer.writeheader()
+            writer.writerows(images)
+
+        logger.info(
+            "Mission metadata written: %s (%d images).", self.metadata_json_path, len(images)
+        )
 
     @property
-    def photo_count(self) -> int:
+    def image_count(self) -> int:
         with self._lock:
-            return len(self._photo_records)
+            return len(self._image_records)
 
 
 class StorageService:
@@ -121,17 +189,28 @@ class StorageService:
     def __init__(self) -> None:
         settings.MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    def create_mission_storage(self) -> MissionStorage:
+    def create_mission_storage(self, mission_name: str = "") -> MissionStorage:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = settings.MISSIONS_DIR / f"mission_{timestamp}"
+        safe_name = self._sanitise_name(mission_name)
+        base = f"{safe_name}_{timestamp}" if safe_name else f"mission_{timestamp}"
+
+        mission_id = base
+        root = settings.MISSIONS_DIR / mission_id
         # Guard against two missions starting within the same second
         suffix = 1
         while root.exists():
-            root = settings.MISSIONS_DIR / f"mission_{timestamp}_{suffix}"
+            mission_id = f"{base}_{suffix}"
+            root = settings.MISSIONS_DIR / mission_id
             suffix += 1
-        storage = MissionStorage(root)
+
+        storage = MissionStorage(root, mission_id=mission_id, mission_name=mission_name or mission_id)
         logger.info("Mission storage created: %s", root)
         return storage
+
+    @staticmethod
+    def _sanitise_name(name: str) -> str:
+        stripped = re.sub(r"[^\w\-]", "_", name.strip())
+        return stripped[:80].strip("_")
 
     def resolve_mission_root(self, name: str) -> Optional[Path]:
         """Return the mission folder for *name*, or None.
@@ -181,15 +260,13 @@ class StorageService:
 
     def mission_summary(self, entry: Path) -> dict:
         metadata = self._read_json(entry / "metadata.json")
+        images = metadata.pop("images", []) if metadata else []
         index = self.ensure_index(entry)
-        photos_dir = entry / "photos"
         return {
             "name": entry.name,
+            "mission_id": (metadata or {}).get("mission_id", entry.name),
             "has_video": (entry / "video.mp4").exists(),
-            "photo_count": (
-                len(list(photos_dir.glob("*.jpg"))) if photos_dir.exists() else 0
-            ),
-            "has_mapping_index": (entry / "mapping" / "photos.json").exists(),
+            "photo_count": len(images),
             "has_log": (entry / "logs" / "mission.log").exists(),
             "metadata": metadata,
             "total_size_bytes": index.get("total_size_bytes", 0) if index else 0,
@@ -197,16 +274,27 @@ class StorageService:
         }
 
     def get_mission_detail(self, name: str) -> Optional[dict]:
-        """Full detail for one stored mission: metadata, indices, plan, stats."""
+        """Full detail for one stored mission: metadata, per-image metadata,
+        executed plan, file index, and telemetry-derived flight statistics."""
         root = self.resolve_mission_root(name)
         if root is None:
             return None
-        detail = self.mission_summary(root)
-        detail["photos"] = self._read_json(root / "mapping" / "photos.json")
-        detail["mission"] = self._read_json(root / "mission.json")
+        metadata = self._read_json(root / "metadata.json")
+        images = metadata.pop("images", []) if metadata else []
         index = self.ensure_index(root)
-        detail["files"] = index.get("files", []) if index else []
-        return detail
+        return {
+            "name": root.name,
+            "mission_id": (metadata or {}).get("mission_id", root.name),
+            "has_video": (root / "video.mp4").exists(),
+            "photo_count": len(images),
+            "has_log": (root / "logs" / "mission.log").exists(),
+            "metadata": metadata,
+            "total_size_bytes": index.get("total_size_bytes", 0) if index else 0,
+            "stats": index.get("stats") if index else None,
+            "images": images,
+            "mission": self._read_json(root / "mission.json"),
+            "files": index.get("files", []) if index else [],
+        }
 
     # ── Mission index (auto-generated after every mission) ─────────────────────
 

@@ -73,6 +73,7 @@ def generate_grid_mission(
     polygon: list[tuple[float, float]],
     params: GridParams,
     home: tuple[float, float] | None = None,
+    mission_name: str | None = None,
 ) -> tuple[Mission, dict]:
     """Build a lawnmower survey Mission over *polygon* ([(lat, lon), ...]).
 
@@ -158,6 +159,9 @@ def generate_grid_mission(
             latitude=lat, longitude=lon, altitude=alt, autocontinue=True,
         ))
 
+    hover_mode = settings.CAPTURE_STRATEGY == "hover"
+    hold_time_s = settings.HOVER_HOLD_TIME_S if hover_mode else 0.0
+
     # 0: home (AMSL frame, matching parser convention)
     add(_CMD_NAV_WAYPOINT, home_ll[0], home_ll[1], 0.0,
         frame=_FRAME_GLOBAL, current=True)
@@ -165,11 +169,21 @@ def generate_grid_mission(
     add(_CMD_NAV_TAKEOFF, first_ll[0], first_ll[1], params.altitude_m)
     # 2: set ground speed
     add(_CMD_DO_CHANGE_SPEED, 0.0, 0.0, 0.0, p1=1.0, p2=params.speed_ms)
-    # survey lines
+    # survey lines — each point is a capture waypoint. In hover mode, param1
+    # carries the hold time (seconds); ArduCopter loiters there before
+    # auto-continuing, giving the Pi a stationary window to trigger capture.
+    n_capture_points = 0
     for a, b in lines:
         for pt in (a, b):
             lat, lon = to_ll(*unrot(pt))
-            add(_CMD_NAV_WAYPOINT, lat, lon, params.altitude_m)
+            waypoints.append(WaypointItem(
+                index=len(waypoints), current=False, frame=_FRAME_GLOBAL_REL,
+                command=_CMD_NAV_WAYPOINT, param1=hold_time_s, param2=0.0,
+                param3=0.0, param4=0.0, latitude=lat, longitude=lon,
+                altitude=params.altitude_m, autocontinue=True,
+                is_capture_point=True,
+            ))
+            n_capture_points += 1
     # final: RTL
     add(_CMD_NAV_RTL, 0.0, 0.0, 0.0)
 
@@ -186,12 +200,13 @@ def generate_grid_mission(
         and (w.latitude != 0 or w.longitude != 0)
     ]
     total_m = _path_distance_m(nav_points)
-    duration_s = total_m / max(params.speed_ms, 0.1)
+    hold_time_total_s = n_capture_points * hold_time_s
+    duration_s = total_m / max(params.speed_ms, 0.1) + hold_time_total_s
     consumed_mah = (duration_s / 3600.0) * settings.CRUISE_CURRENT_AMPS * 1000.0
     battery_pct = min((consumed_mah / settings.DEFAULT_BATTERY_CAPACITY_MAH) * 100.0, 100.0)
 
     mission = Mission(
-        filename="generated_grid.plan",
+        filename=f"{mission_name}.plan" if mission_name else "generated_grid.plan",
         source_format="grid",
         waypoint_count=len(waypoints),
         nav_waypoints=len(nav_points),
@@ -204,18 +219,28 @@ def generate_grid_mission(
         waypoints=waypoints,
     )
 
+    estimated_photos = (
+        n_capture_points if hover_mode else max(1, int(total_m / photo_spacing))
+    )
+
     plan_info = {
         "line_count": len(lines),
         "line_spacing_m": round(line_spacing, 2),
         "photo_spacing_m": round(photo_spacing, 2),
         "footprint_width_m": round(footprint_w, 2),
         "footprint_height_m": round(footprint_h, 2),
-        "estimated_photos": max(1, int(total_m / photo_spacing)),
+        "estimated_photos": estimated_photos,
+        "capture_mode": settings.CAPTURE_STRATEGY,
+        "hold_time_s": round(hold_time_s, 2),
+        "capture_waypoint_count": n_capture_points,
+        "hold_time_total_s": round(hold_time_total_s, 1),
     }
 
     logger.info(
-        "Grid generated: %d lines, %d waypoints, %.0f m, spacing %.1f m, photo every %.1f m.",
-        len(lines), len(waypoints), total_m, line_spacing, photo_spacing,
+        "Grid generated: %d lines, %d waypoints, %.0f m, spacing %.1f m, "
+        "capture=%s (%d points, %.1fs hold each).",
+        len(lines), len(waypoints), total_m, line_spacing,
+        settings.CAPTURE_STRATEGY, n_capture_points, hold_time_s,
     )
     return mission, plan_info
 

@@ -18,4 +18,11 @@ HOST="$($PY -c "from config import settings; print(settings.HOST)")"
 PORT="$($PY -c "from config import settings; print(settings.PORT)")"
 
 echo "Starting DronAI on ${HOST}:${PORT}"
-exec "$PY" -m uvicorn main:app --host "$HOST" --port "$PORT"
+# Single worker only: drone_state/camera_service/mission_runner are process-
+# wide singletons — a second worker process would hold its own disconnected
+# copies and silently break MAVLink/camera coordination. --no-access-log
+# cuts a per-request log line (disk I/O) for every 1 Hz telemetry poll,
+# which adds up on an SD card over a long autonomous mission; the app's own
+# logger (services/log_service.py, surfaced at GET /logs) already captures
+# everything operationally meaningful.
+exec "$PY" -m uvicorn main:app --host "$HOST" --port "$PORT" --no-access-log

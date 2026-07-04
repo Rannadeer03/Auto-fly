@@ -10,7 +10,6 @@ import logging.handlers
 import threading
 from collections import deque
 from datetime import datetime, timezone
-from pathlib import Path
 
 from config import settings
 
