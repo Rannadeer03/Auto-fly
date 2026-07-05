@@ -94,10 +94,18 @@ async def lifespan(app: FastAPI):
             daemon=True,
         ).start()
 
+    # GCS-independent mission-session watchdog: starts recording/capture
+    # automatically when telemetry shows AUTO+armed, no matter what
+    # triggered it (this app, an RC switch, or QGroundControl directly).
+    from services import mission_watchdog
+    watchdog_stop = threading.Event()
+    mission_watchdog.start(watchdog_stop)
+
     yield
 
     logger.info("DronAI server shutting down.")
     supervisor_stop.set()
+    watchdog_stop.set()
 
     # End any active mission session cleanly (stops recording, writes files).
     from services.mission_runner import mission_runner

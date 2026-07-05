@@ -4,6 +4,9 @@ Telemetry snapshot builder.
 Reads from the shared DroneState (populated by the MAVLink receiver thread)
 and constructs the Pydantic TelemetryData model returned to the frontend.
 """
+import time
+from types import SimpleNamespace
+
 from mavlink.connection import drone_state, MAV_STATE_NAMES, GPS_FIX_NAMES
 from models.telemetry import (
     TelemetryData,
@@ -34,8 +37,11 @@ class TelemetryReader:
 
     @staticmethod
     def snapshot() -> TelemetryData:
-        s = drone_state
-        ago = s.last_heartbeat_ago_s
+        # Read every field through the DroneState lock in one pass so a
+        # concurrent MAVLink update can't be applied halfway through this
+        # snapshot (e.g. lat updated but lon still from the previous fix).
+        s = SimpleNamespace(**drone_state.snapshot())
+        ago = 99.0 if s.last_heartbeat_time == 0.0 else time.monotonic() - s.last_heartbeat_time
 
         return TelemetryData(
             connected=s.connected,

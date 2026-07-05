@@ -111,6 +111,11 @@ async def generate_mission(body: GridRequest) -> GridResponse:
         logger.error("Grid mission upload failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"MAVLink upload error: {exc}")
 
+    # Both branches above enrich the mission (densified legs + native loiter
+    # items) before storing it — reflect that actual mission back to the
+    # frontend instead of the pre-enrichment grid_planner output.
+    mission = mission_service.current_mission or mission
+
     if uploaded and verified:
         msg = "Survey mission generated, uploaded, and verified on vehicle."
     elif uploaded:

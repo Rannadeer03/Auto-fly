@@ -20,6 +20,7 @@ from mavlink.mission_upload import MissionUploader
 from models.mission import Mission
 from parser.loader import load_mission
 from parser.waypoint_parser import WaypointParseError
+from services.mission_enrichment import enrich_mission
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ class MissionService:
 
         # Delegate to the format-appropriate parser via the loader
         mission = load_mission(safe_name, data)
+
+        # Densify sparse legs and insert native loiter/capture mission items
+        # — a hand-authored or QGC-exported mission may have as few as 3-6
+        # waypoints with no intermediate capture positions.
+        mission = enrich_mission(mission)
 
         # Save to disk
         save_path = settings.UPLOAD_DIR / f"{uuid.uuid4().hex[:8]}_{safe_name}"
@@ -103,13 +109,14 @@ class MissionService:
 
     def store_mission(self, mission: Mission) -> None:
         """Hold a Mission locally without uploading it to the vehicle."""
-        self._current_mission = mission
+        self._current_mission = enrich_mission(mission)
 
     def load_generated(self, mission: Mission) -> dict:
         """Adopt an in-memory Mission (e.g. survey grid) and upload if connected.
 
         Mirrors process_upload() but skips file parsing/saving of raw bytes.
         """
+        mission = enrich_mission(mission)
         self._current_mission = mission
         uploaded = False
         verified = False

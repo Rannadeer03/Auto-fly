@@ -72,24 +72,27 @@ class CaptureStrategy(ABC):
 
 
 class HoverCaptureStrategy(CaptureStrategy):
-    """Waypoint -> Position Hold -> Capture one photo -> Continue (default).
+    """Waypoint -> Loiter -> Confirm tolerance -> Capture one photo -> Continue.
 
-    ArduCopter performs the hold itself: every survey waypoint carries a
-    MAV_CMD_NAV_WAYPOINT param1 hold time (see grid_planner.py), so the
-    vehicle is already loitering once MISSION_ITEM_REACHED fires for that
-    seq. This strategy then confirms the airframe is actually stable
+    Every capture point is followed by a dedicated MAV_CMD_NAV_LOITER_TIME
+    mission item (see mission_enrichment.py) — a standard ArduPilot command
+    that ArduCopter only reports MISSION_ITEM_REACHED for once its hold
+    duration has actually elapsed, so the vehicle is already loitering by
+    the time this strategy sees that item's seq. This strategy then
+    independently confirms the vehicle is within position/altitude
+    tolerance of the planned point and that the airframe is actually stable
     (ground speed and all three angular rates below threshold) before
-    firing the shutter — not just a fixed delay — so a gust of wind or a
-    slow-to-settle gimbal-less mount doesn't blur the shot. A bounded
-    max-wait guarantees the mission never stalls if stability is never
-    cleanly detected (e.g. a noisy sensor on a breezy day).
+    firing the shutter — not just trusting a fixed delay — so a gust of
+    wind or a slow-to-settle gimbal-less mount doesn't blur the shot. A
+    bounded max-wait guarantees the mission never stalls if that's never
+    cleanly confirmed (e.g. a noisy sensor on a breezy day).
     """
 
     # Absolute floor: always let the arrival transient decay a little before
-    # even checking telemetry, regardless of how "stable" it reports.
+    # even checking telemetry, regardless of how "ready" it reports.
     _MIN_SETTLE_S = 0.2
     # Ceiling: capture anyway once this much time has passed at the
-    # waypoint, whether or not stability was ever confirmed. This is what
+    # waypoint, whether or not readiness was ever confirmed. This is what
     # keeps a mission from stalling forever on a bad IMU reading or wind.
     _MAX_WAIT_S = 3.0
     # "Stable" thresholds — comfortably tighter than normal AUTO-mode loiter
@@ -97,13 +100,13 @@ class HoverCaptureStrategy(CaptureStrategy):
     _STABLE_GROUND_SPEED_MS = 0.3
     _STABLE_ANGULAR_RATE_DPS = 5.0
 
-    def __init__(self, capture_waypoint_seqs: set[int]) -> None:
+    def __init__(self, capture_points: dict[int, tuple[float, float, float]]) -> None:
         super().__init__()
-        self._capture_seqs = capture_waypoint_seqs
+        self._capture_points = capture_points  # seq -> (lat, lon, altitude_rel)
         self._captured_seqs: set[int] = set()
         self._pending_seq: Optional[int] = None
         self._pending_since: float = 0.0
-        self._warned_unstable = False
+        self._warned_unready = False
 
     def _is_stable(self) -> bool:
         s = drone_state
@@ -114,19 +117,32 @@ class HoverCaptureStrategy(CaptureStrategy):
             and abs(s.yaw_speed) < self._STABLE_ANGULAR_RATE_DPS
         )
 
+    def _is_in_tolerance(self, seq: int) -> bool:
+        """Confirm the vehicle is actually at the planned position/altitude
+        for *seq* — belt-and-suspenders alongside ArduPilot's own
+        acceptance-radius/MISSION_ITEM_REACHED behaviour."""
+        target = self._capture_points.get(seq)
+        if target is None:
+            return True
+        lat, lon, alt = target
+        s = drone_state
+        within_radius = haversine_m(s.latitude, s.longitude, lat, lon) <= settings.WAYPOINT_RADIUS_M
+        within_altitude = abs(s.altitude_rel - alt) <= settings.ALTITUDE_TOLERANCE_M
+        return within_radius and within_altitude
+
     def tick(self, now: float, storage: MissionStorage) -> bool:
         if not self._capture_allowed():
             return False
 
         seq = drone_state.last_reached_waypoint
         if (
-            seq in self._capture_seqs
+            seq in self._capture_points
             and seq not in self._captured_seqs
             and self._pending_seq != seq
         ):
             self._pending_seq = seq
             self._pending_since = now
-            self._warned_unstable = False
+            self._warned_unready = False
             logger.debug("Hover capture armed for waypoint %d.", seq)
 
         if self._pending_seq is None:
@@ -136,16 +152,16 @@ class HoverCaptureStrategy(CaptureStrategy):
         if elapsed < self._MIN_SETTLE_S:
             return False
 
-        stable = self._is_stable()
-        if elapsed < self._MAX_WAIT_S and not stable:
-            return False  # still moving/rotating — keep waiting for stability
+        ready = self._is_stable() and self._is_in_tolerance(self._pending_seq)
+        if elapsed < self._MAX_WAIT_S and not ready:
+            return False  # not yet in position/stable — keep waiting
 
         target_seq = self._pending_seq
-        if not stable and not self._warned_unstable:
-            self._warned_unstable = True
+        if not ready and not self._warned_unready:
+            self._warned_unready = True
             logger.warning(
-                "Waypoint %d: stability never confirmed within %.1fs — capturing anyway "
-                "to avoid stalling the mission.",
+                "Waypoint %d: position/altitude/stability never confirmed within "
+                "%.1fs — capturing anyway to avoid stalling the mission.",
                 target_seq, self._MAX_WAIT_S,
             )
 
@@ -201,17 +217,20 @@ class ContinuousCaptureStrategy(CaptureStrategy):
 def build_capture_strategy(mission_dict: Optional[dict]) -> CaptureStrategy:
     """Construct the strategy configured by settings.CAPTURE_STRATEGY.
 
-    In hover mode, capture waypoint indices come from the executed mission's
-    is_capture_point flags (set by grid_planner.py); a mission with none
-    (e.g. a raw QGC file uploaded for debugging) simply never fires.
+    In hover mode, capture points (seq -> planned lat/lon/altitude) come
+    from the executed mission's is_capture_point flags — set by
+    mission_enrichment.py on the MAV_CMD_NAV_LOITER_TIME item it inserts
+    after every capture waypoint. A mission with none (e.g. a raw QGC file
+    uploaded with CAPTURE_STRATEGY=continuous) simply never fires.
     """
     if settings.CAPTURE_STRATEGY == "continuous":
         return ContinuousCaptureStrategy()
 
-    capture_seqs: set[int] = set()
+    capture_points: dict[int, tuple[float, float, float]] = {}
     if mission_dict:
-        capture_seqs = {
-            wp["index"] for wp in mission_dict.get("waypoints", [])
+        capture_points = {
+            wp["index"]: (wp["latitude"], wp["longitude"], wp["altitude"])
+            for wp in mission_dict.get("waypoints", [])
             if wp.get("is_capture_point")
         }
-    return HoverCaptureStrategy(capture_seqs)
+    return HoverCaptureStrategy(capture_points)

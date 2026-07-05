@@ -74,6 +74,8 @@ MAV_STATE_NAMES: dict[int, str] = {
     8: "FLIGHT_TERMINATION",
 }
 
+_MAX_CONSECUTIVE_RECEIVE_ERRORS = 5
+
 GPS_FIX_NAMES: dict[int, str] = {
     0: "No GPS",
     1: "No Fix",
@@ -427,17 +429,55 @@ class MAVLinkConnection:
 
     def _receiver_loop(self) -> None:
         logger.debug("MAVLink receiver thread started.")
+        consecutive_errors = 0
         while self._running and self._master:
             try:
                 msg = self._master.recv_match(blocking=True, timeout=1.0)
+                consecutive_errors = 0
                 if msg is not None and msg.get_type() != "BAD_DATA":
                     self._dispatch(msg)
             except Exception as exc:
                 if not self._running:
                     break
-                logger.warning("Receiver error: %s", exc)
+                consecutive_errors += 1
+                logger.warning(
+                    "Receiver error (%d/%d consecutive): %s",
+                    consecutive_errors, _MAX_CONSECUTIVE_RECEIVE_ERRORS, exc,
+                )
+                if consecutive_errors >= _MAX_CONSECUTIVE_RECEIVE_ERRORS:
+                    logger.error(
+                        "Receiver link appears dead after %d consecutive errors — "
+                        "tearing down so the link supervisor can reconnect.",
+                        consecutive_errors,
+                    )
+                    self._kill_dead_link()
+                    break
                 time.sleep(0.05)
         logger.debug("MAVLink receiver thread stopped.")
+
+    def _kill_dead_link(self) -> None:
+        """Tear down a connection whose receive loop can no longer read anything.
+
+        Without this, a broken serial port left the receiver spinning on
+        exceptions forever while drone_state.connected stayed True — every
+        telemetry field (position, battery, GPS, ...) froze at its last
+        value with no indication anything was wrong. Mirrors disconnect()'s
+        cleanup but runs from inside the receiver thread itself, so it must
+        not join() (that would deadlock joining its own thread) — the link
+        supervisor's regular "not connected -> reconnect" poll takes it from
+        here.
+        """
+        with self._lock:
+            self._running = False
+            if self._master:
+                try:
+                    self._master.close()
+                except Exception:
+                    pass
+                self._master = None
+            self._port = None
+        self.state.update(connected=False)
+        self.state.reset_flight_data()
 
     def _dispatch(self, msg) -> None:
         msg_type = msg.get_type()
@@ -499,12 +539,15 @@ class MAVLinkConnection:
         )
 
     def _on_vfr_hud(self, msg) -> None:
+        # altitude_rel is owned exclusively by _on_global_position
+        # (GLOBAL_POSITION_INT) — VFR_HUD's own altitude used to overwrite it
+        # too, and the two sources disagreeing depending on arrival order
+        # made relative altitude visibly jitter/inconsistent in telemetry.
         self.state.update(
             air_speed=round(msg.airspeed, 2),
             ground_speed=round(msg.groundspeed, 2),
             heading=msg.heading,
             climb_rate=round(msg.climb, 2),
-            altitude_rel=round(msg.alt, 2),
         )
 
     def _on_attitude(self, msg) -> None:

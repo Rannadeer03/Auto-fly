@@ -160,6 +160,9 @@ def generate_grid_mission(
         ))
 
     hover_mode = settings.CAPTURE_STRATEGY == "hover"
+    # The actual hold-at-waypoint hold is a dedicated MAV_CMD_NAV_LOITER_TIME
+    # item, inserted uniformly for every mission (uploaded or generated) by
+    # services/mission_enrichment.py — this stays at param1=0.0 here.
     hold_time_s = settings.HOVER_HOLD_TIME_S if hover_mode else 0.0
 
     # 0: home (AMSL frame, matching parser convention)
@@ -169,16 +172,15 @@ def generate_grid_mission(
     add(_CMD_NAV_TAKEOFF, first_ll[0], first_ll[1], params.altitude_m)
     # 2: set ground speed
     add(_CMD_DO_CHANGE_SPEED, 0.0, 0.0, 0.0, p1=1.0, p2=params.speed_ms)
-    # survey lines — each point is a capture waypoint. In hover mode, param1
-    # carries the hold time (seconds); ArduCopter loiters there before
-    # auto-continuing, giving the Pi a stationary window to trigger capture.
+    # survey lines — each point is a capture waypoint (loiter/hold item
+    # inserted by mission_enrichment.py, not here).
     n_capture_points = 0
     for a, b in lines:
         for pt in (a, b):
             lat, lon = to_ll(*unrot(pt))
             waypoints.append(WaypointItem(
                 index=len(waypoints), current=False, frame=_FRAME_GLOBAL_REL,
-                command=_CMD_NAV_WAYPOINT, param1=hold_time_s, param2=0.0,
+                command=_CMD_NAV_WAYPOINT, param1=0.0, param2=0.0,
                 param3=0.0, param4=0.0, latitude=lat, longitude=lon,
                 altitude=params.altitude_m, autocontinue=True,
                 is_capture_point=True,
