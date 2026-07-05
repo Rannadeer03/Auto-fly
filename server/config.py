@@ -13,6 +13,7 @@ overrides apply to deployment too.
 import os
 import platform
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).parent
 
@@ -104,9 +105,27 @@ class Settings:
     #                  time while flying (services/capture_strategies.py:
     #                  ContinuousCaptureStrategy). Reserved for future use.
     CAPTURE_STRATEGY: str = os.environ.get("CAPTURE_STRATEGY", "hover")
-    # Hold duration (seconds) ArduCopter loiters at each survey waypoint
-    # before auto-continuing, applied as MAV_CMD_NAV_WAYPOINT param1.
-    HOVER_HOLD_TIME_S: float = float(os.environ.get("HOVER_HOLD_TIME_S", "1.0"))
+    # Hold duration (seconds) ArduCopter loiters at each capture waypoint,
+    # applied as a dedicated MAV_CMD_NAV_LOITER_TIME mission item inserted
+    # after the waypoint (see services/mission_enrichment.py).
+    HOVER_HOLD_TIME_S: float = float(os.environ.get("HOVER_HOLD_TIME_S", "2.0"))
+    # A capture waypoint must be within this many metres of its planned
+    # position (great-circle distance) before the hover/capture sequence is
+    # allowed to start — belt-and-suspenders alongside ArduPilot's own
+    # MISSION_ITEM_REACHED / acceptance-radius behaviour.
+    WAYPOINT_RADIUS_M: float = float(os.environ.get("WAYPOINT_RADIUS_M", "2.0"))
+    # A capture waypoint must be within this many metres of its planned
+    # relative altitude before the hover/capture sequence is allowed to start.
+    ALTITUDE_TOLERANCE_M: float = float(os.environ.get("ALTITUDE_TOLERANCE_M", "2.0"))
+    # Maximum distance (metres) between consecutive capture waypoints before
+    # mission_enrichment.py inserts intermediate waypoints along the leg.
+    # None (default) derives it from the camera footprint at the mission's
+    # flight altitude, matching grid_planner's own photo spacing.
+    MAX_WAYPOINT_SPACING_M: Optional[float] = (
+        float(os.environ["MAX_WAYPOINT_SPACING_M"])
+        if os.environ.get("MAX_WAYPOINT_SPACING_M")
+        else None
+    )
 
     # Continuous-mode capture sub-settings (only used when
     # CAPTURE_STRATEGY == "continuous").

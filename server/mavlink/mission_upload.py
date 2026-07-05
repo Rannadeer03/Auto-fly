@@ -27,6 +27,7 @@ from pymavlink import mavutil
 from config import settings
 from mavlink.connection import MAVLinkConnection
 from models.mission import Mission, WaypointItem
+from parser.waypoint_parser import _path_distance_m
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ _UPLOAD_TOTAL_TIMEOUT = 60.0   # seconds — covers 1000-waypoint missions
 _ITEM_REQUEST_TIMEOUT = 5.0    # per-item request timeout
 _ACK_TIMEOUT          = 5.0    # MISSION_ACK / COMMAND_ACK timeout
 _VERIFY_ITEM_TIMEOUT  = 5.0    # per-item download timeout during verification
+
+_CMD_NAV_WAYPOINT    = 16
+_CMD_NAV_LOITER_TIME = 19
+_CMD_DO_CHANGE_SPEED = 178
 
 
 class MissionUploadError(RuntimeError):
@@ -215,6 +220,59 @@ class MissionUploader:
         logger.info(ok_msg)
         return True, ok_msg
 
+    def download_mission(self, filename: str = "vehicle_mission.plan") -> Mission:
+        """Read the mission currently stored on the vehicle and return it as
+        a Mission — used when the backend needs waypoint data for a mission
+        it didn't upload itself (e.g. one loaded directly from
+        QGroundControl), so camera automation still has planned lat/lon/
+        altitude to check tolerance against. Shares the same download
+        protocol as verify_mission(), just building objects instead of
+        diffing them against an expected mission.
+        """
+        m = self._require_master()
+
+        q_count = self._conn.register_waiter("MISSION_COUNT")
+        try:
+            m.mav.mission_request_list_send(
+                m.target_system, m.target_component,
+                mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+            )
+            logger.info("→ MISSION_REQUEST_LIST sent (download).")
+            try:
+                count_msg = q_count.get(timeout=5.0)
+            except queue.Empty:
+                raise MissionUploadError(
+                    "Mission download failed: timeout waiting for MISSION_COUNT."
+                )
+        finally:
+            self._conn.unregister_waiter("MISSION_COUNT")
+
+        count = count_msg.count
+        logger.info("← MISSION_COUNT received: vehicle has %d items.", count)
+        if count == 0:
+            raise MissionUploadError("Vehicle has no mission stored.")
+
+        waypoints: list[WaypointItem] = []
+        q_items = self._conn.register_waiter("MISSION_ITEM_INT", "MISSION_ITEM")
+        try:
+            for i in range(count):
+                m.mav.mission_request_int_send(
+                    m.target_system, m.target_component, i,
+                    mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+                )
+                try:
+                    item_msg = q_items.get(timeout=_VERIFY_ITEM_TIMEOUT)
+                except queue.Empty:
+                    raise MissionUploadError(
+                        f"Mission download failed: timeout downloading item {i}."
+                    )
+                waypoints.append(_waypoint_from_msg(item_msg, i))
+        finally:
+            self._conn.unregister_waiter("MISSION_ITEM_INT", "MISSION_ITEM")
+
+        _mark_capture_points(waypoints)
+        return _build_mission(waypoints, filename)
+
     # ── Internal ───────────────────────────────────────────────────────────────
 
     def _do_upload(self, m, waypoints: list[WaypointItem], count: int, q: queue.Queue) -> bool:
@@ -382,6 +440,81 @@ class MissionUploader:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _waypoint_from_msg(msg, seq: int) -> WaypointItem:
+    """Build a WaypointItem from a downloaded MISSION_ITEM_INT/MISSION_ITEM."""
+    is_int = msg.get_type() == "MISSION_ITEM_INT"
+    lat = msg.x / 1e7 if is_int else float(msg.x)
+    lon = msg.y / 1e7 if is_int else float(msg.y)
+    return WaypointItem(
+        index=seq,
+        current=bool(msg.current),
+        frame=int(msg.frame),
+        command=int(msg.command),
+        param1=float(msg.param1),
+        param2=float(msg.param2),
+        param3=float(msg.param3),
+        param4=float(msg.param4),
+        latitude=lat,
+        longitude=lon,
+        altitude=float(msg.z),
+        autocontinue=bool(msg.autocontinue),
+    )
+
+
+def _mark_capture_points(waypoints: list[WaypointItem]) -> None:
+    """Reconstruct is_capture_point on a downloaded mission — MAVLink has no
+    wire concept of it, so it doesn't survive a round-trip to the vehicle.
+
+    If the mission has explicit MAV_CMD_NAV_LOITER_TIME items (the signal
+    mission_enrichment.py writes), trust those. Otherwise (a raw QGC mission
+    uploaded without ever going through our enrichment pipeline) fall back
+    to treating every real nav waypoint as a capture point, so camera
+    automation still fires for missions uploaded directly from QGC.
+    """
+    loiter_items = [w for w in waypoints if w.command == _CMD_NAV_LOITER_TIME]
+    if loiter_items:
+        for w in loiter_items:
+            w.is_capture_point = True
+        return
+    for w in waypoints:
+        if w.command == _CMD_NAV_WAYPOINT and not w.current and (w.latitude != 0 or w.longitude != 0):
+            w.is_capture_point = True
+
+
+def _build_mission(waypoints: list[WaypointItem], filename: str) -> Mission:
+    nav_points = [
+        w for w in waypoints
+        if w.command == _CMD_NAV_WAYPOINT and not w.current
+        and (w.latitude != 0 or w.longitude != 0)
+    ]
+    total_m = _path_distance_m(nav_points)
+
+    cruise_speed = settings.DEFAULT_CRUISE_SPEED_MS
+    for w in waypoints:
+        if w.command == _CMD_DO_CHANGE_SPEED and w.param2 > 0:
+            cruise_speed = w.param2
+            break
+
+    duration_s = total_m / max(cruise_speed, 0.1)
+    consumed_mah = (duration_s / 3600.0) * settings.CRUISE_CURRENT_AMPS * 1000.0
+    battery_pct = min((consumed_mah / settings.DEFAULT_BATTERY_CAPACITY_MAH) * 100.0, 100.0)
+    altitudes = [w.altitude for w in waypoints if w.altitude > 0]
+
+    return Mission(
+        filename=filename,
+        source_format="vehicle",
+        waypoint_count=len(waypoints),
+        nav_waypoints=len(nav_points),
+        total_distance_m=round(total_m, 1),
+        total_distance_km=round(total_m / 1000.0, 3),
+        estimated_duration_minutes=round(duration_s / 60.0, 1),
+        estimated_battery_percent=round(battery_pct, 1),
+        min_altitude_m=min(altitudes) if altitudes else 0.0,
+        max_altitude_m=max(altitudes) if altitudes else 0.0,
+        waypoints=waypoints,
+    )
+
 
 def _ack_type_name(ack_type: int) -> str:
     """Return a human-readable name for a MAV_MISSION_RESULT value."""
