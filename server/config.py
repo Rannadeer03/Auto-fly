@@ -73,6 +73,17 @@ class Settings:
 
     # Set DEBUG_MAVLINK=1 to log every MAVLink packet sent and received.
     DEBUG_MAVLINK: bool = _env_bool("DEBUG_MAVLINK", False)
+    # TEMP DEBUG — set LOG_TELEMETRY_RX=1 to log every received HEARTBEAT,
+    # GPS_RAW_INT, GLOBAL_POSITION_INT, and MISSION_CURRENT at INFO level, to
+    # compare live hardware telemetry against what QGroundControl shows.
+    # Remove this flag and its call sites once hardware telemetry is confirmed.
+    LOG_TELEMETRY_RX: bool = _env_bool("LOG_TELEMETRY_RX", False)
+
+    # Requested via REQUEST_DATA_STREAM right after connecting — without this,
+    # ArduPilot sends only HEARTBEAT on a link; GPS/position/status telemetry
+    # requires an explicit stream request (every GCS, including QGroundControl,
+    # sends this on connect).
+    TELEMETRY_STREAM_RATE_HZ: int = int(os.environ.get("TELEMETRY_STREAM_RATE_HZ", "4"))
 
     # ── Safety thresholds ──────────────────────────────────────────────────────
     MIN_BATTERY_VOLTAGE: float = float(os.environ.get("MIN_BATTERY_VOLTAGE", "22.2"))
