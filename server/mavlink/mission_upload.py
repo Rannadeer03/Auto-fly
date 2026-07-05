@@ -129,6 +129,36 @@ class MissionUploader:
         finally:
             self._conn.unregister_waiter(*_WAIT_TYPES)
 
+    def query_mission_count(self) -> int:
+        """Ask the vehicle how many mission items it currently has stored,
+        via MISSION_REQUEST_LIST -> MISSION_COUNT, without downloading any
+        items. Shared by verify_mission(), download_mission(), and the
+        post-connect mission-state sync (connection_service.py) — the one
+        place that actually asks the vehicle "is a mission loaded?" instead
+        of trusting our own upload history.
+        """
+        m = self._require_master()
+        q_count = self._conn.register_waiter("MISSION_COUNT")
+        try:
+            m.mav.mission_request_list_send(
+                m.target_system, m.target_component,
+                mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
+            )
+            logger.info("→ MISSION_REQUEST_LIST sent.")
+            if settings.DEBUG_MAVLINK:
+                logger.info("[MAVLink TX] MISSION_REQUEST_LIST")
+            try:
+                count_msg = q_count.get(timeout=5.0)
+            except queue.Empty:
+                raise MissionUploadError(
+                    "Timeout waiting for MISSION_COUNT — vehicle may not have a mission stored."
+                )
+        finally:
+            self._conn.unregister_waiter("MISSION_COUNT")
+
+        logger.info("← MISSION_COUNT received: vehicle has %d items.", count_msg.count)
+        return count_msg.count
+
     def verify_mission(self, mission: Mission) -> tuple[bool, str]:
         """
         Download the mission from the vehicle and compare with the local copy.
@@ -144,34 +174,10 @@ class MissionUploader:
             "Starting mission verification (expecting %d items).", expected_count
         )
 
-        # Phase 1: request item count
-        q_count = self._conn.register_waiter("MISSION_COUNT")
         try:
-            m.mav.mission_request_list_send(
-                m.target_system,
-                m.target_component,
-                mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
-            )
-            logger.info("→ MISSION_REQUEST_LIST sent.")
-            if settings.DEBUG_MAVLINK:
-                logger.info("[MAVLink TX] MISSION_REQUEST_LIST")
-
-            try:
-                count_msg = q_count.get(timeout=5.0)
-            except queue.Empty:
-                return (
-                    False,
-                    "Mission verification failed: timeout waiting for MISSION_COUNT. "
-                    "Vehicle may not have stored the mission.",
-                )
-        finally:
-            self._conn.unregister_waiter("MISSION_COUNT")
-
-        vehicle_count = count_msg.count
-        logger.info(
-            "← MISSION_COUNT received: vehicle has %d items (expected %d).",
-            vehicle_count, expected_count,
-        )
+            vehicle_count = self.query_mission_count()
+        except MissionUploadError as exc:
+            return False, f"Mission verification failed: {exc}"
 
         if vehicle_count != expected_count:
             return (
@@ -230,25 +236,7 @@ class MissionUploader:
         diffing them against an expected mission.
         """
         m = self._require_master()
-
-        q_count = self._conn.register_waiter("MISSION_COUNT")
-        try:
-            m.mav.mission_request_list_send(
-                m.target_system, m.target_component,
-                mavutil.mavlink.MAV_MISSION_TYPE_MISSION,
-            )
-            logger.info("→ MISSION_REQUEST_LIST sent (download).")
-            try:
-                count_msg = q_count.get(timeout=5.0)
-            except queue.Empty:
-                raise MissionUploadError(
-                    "Mission download failed: timeout waiting for MISSION_COUNT."
-                )
-        finally:
-            self._conn.unregister_waiter("MISSION_COUNT")
-
-        count = count_msg.count
-        logger.info("← MISSION_COUNT received: vehicle has %d items.", count)
+        count = self.query_mission_count()
         if count == 0:
             raise MissionUploadError("Vehicle has no mission stored.")
 

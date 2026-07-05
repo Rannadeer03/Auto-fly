@@ -398,11 +398,41 @@ class MAVLinkConnection:
             )
             self._receiver.start()
 
+            # ArduPilot only pushes GPS_RAW_INT/GLOBAL_POSITION_INT/SYS_STATUS/
+            # MISSION_CURRENT/etc. on a link if something requests them —
+            # HEARTBEAT is the only message sent unconditionally. QGroundControl
+            # always sends this request on connect, which is why it sees live
+            # GPS while a link that skips this step sees nothing but heartbeats.
+            self._request_data_streams(master)
+
             logger.info(
                 "Connected to Pixhawk on %s — system_id=%d  mode=%s  armed=%s",
                 port, master.target_system,
                 self.state.flight_mode, self.state.armed,
             )
+
+    def _request_data_streams(self, master) -> None:
+        """Ask the vehicle to start streaming telemetry on this link.
+
+        Uses the legacy REQUEST_DATA_STREAM message (still honoured by
+        ArduPilot for every stream group via MAV_DATA_STREAM_ALL) rather than
+        per-message SET_MESSAGE_INTERVAL — one message, broadly compatible,
+        and exactly what MAVProxy/QGroundControl do on connect.
+        """
+        try:
+            master.mav.request_data_stream_send(
+                master.target_system,
+                master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_ALL,
+                settings.TELEMETRY_STREAM_RATE_HZ,
+                1,  # start
+            )
+            logger.info(
+                "→ REQUEST_DATA_STREAM sent (ALL streams @ %d Hz).",
+                settings.TELEMETRY_STREAM_RATE_HZ,
+            )
+        except Exception:
+            logger.exception("Failed to send REQUEST_DATA_STREAM — telemetry may stay empty.")
 
     def disconnect(self) -> None:
         """Stop the receiver thread and close the serial port."""
@@ -511,6 +541,13 @@ class MAVLinkConnection:
     def _on_heartbeat(self, msg) -> None:
         if msg.type == mavutil.mavlink.MAV_TYPE_GCS:
             return
+        if settings.LOG_TELEMETRY_RX:  # TEMP DEBUG — remove once hardware telemetry is confirmed
+            logger.info(
+                "[RX HEARTBEAT] type=%d autopilot=%d base_mode=%d custom_mode=%d "
+                "system_status=%d armed=%s",
+                msg.type, msg.autopilot, msg.base_mode, msg.custom_mode, msg.system_status,
+                bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED),
+            )
         self.state.update(
             connected=True,
             last_heartbeat_time=time.monotonic(),
@@ -523,6 +560,11 @@ class MAVLinkConnection:
     def _on_gps_raw(self, msg) -> None:
         hdop = msg.eph / 100.0 if msg.eph != 65535 else 99.99
         vdop = msg.epv / 100.0 if msg.epv != 65535 else 99.99
+        if settings.LOG_TELEMETRY_RX:  # TEMP DEBUG — remove once hardware telemetry is confirmed
+            logger.info(
+                "[RX GPS_RAW_INT] fix_type=%d satellites_visible=%d eph=%d epv=%d lat=%d lon=%d",
+                msg.fix_type, msg.satellites_visible, msg.eph, msg.epv, msg.lat, msg.lon,
+            )
         self.state.update(
             gps_fix_type=msg.fix_type,
             gps_satellites=msg.satellites_visible,
@@ -531,6 +573,11 @@ class MAVLinkConnection:
         )
 
     def _on_global_position(self, msg) -> None:
+        if settings.LOG_TELEMETRY_RX:  # TEMP DEBUG — remove once hardware telemetry is confirmed
+            logger.info(
+                "[RX GLOBAL_POSITION_INT] lat=%.7f lon=%.7f alt_msl=%.2f alt_rel=%.2f",
+                msg.lat / 1e7, msg.lon / 1e7, msg.alt / 1000.0, msg.relative_alt / 1000.0,
+            )
         self.state.update(
             latitude=msg.lat / 1e7,
             longitude=msg.lon / 1e7,
@@ -598,6 +645,8 @@ class MAVLinkConnection:
         )
 
     def _on_mission_current(self, msg) -> None:
+        if settings.LOG_TELEMETRY_RX:  # TEMP DEBUG — remove once hardware telemetry is confirmed
+            logger.info("[RX MISSION_CURRENT] seq=%d", msg.seq)
         self.state.update(current_waypoint=msg.seq)
 
     def _on_mission_item_reached(self, msg) -> None:
