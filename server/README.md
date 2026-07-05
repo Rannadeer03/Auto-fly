@@ -36,16 +36,32 @@ RX→GPIO14 (pin 8), GND→GND. Baud 57600 (`MAVLINK_BAUD`).
 
 Manual run for development: `bash server/deploy/start.sh`
 
-## Website (single frontend, three tabs)
+## Website — Vayuraksha Mission Planner (React/TypeScript, in `../web`)
 
-- **Flight** — connection status, telemetry, mission file upload
-  (`.plan`/`.waypoints`), ARM/START/PAUSE/RTL/LAND controls, live logs.
-- **Planning** — mapping frontend: draw a survey polygon on the map,
-  configure altitude / speed / side & front overlap / grid angle / camera
-  interval, generate the lawnmower grid, preview it, and upload it to the
-  Pixhawk in one click.
-- **Missions** — mission history and results: photos, video, telemetry,
-  metadata, geotag index. Opens automatically when a mission completes.
+A full ground-control-station SPA — this backend never renders HTML itself,
+it just serves the built app (`web/dist`) and the JSON/mission APIs it calls.
+
+- **Mission** — draw a farm boundary (rectangle/polygon), the survey
+  (lawnmower grid, waypoints, capture points) regenerates live as flight
+  parameters change, then Upload Mission sends it to the Pixhawk.
+- **Survey Settings** — altitude, speed, overlaps, grid angle (auto or
+  manual), hover-capture hold time, camera angle/format.
+- **Telemetry** / **Drone Status** — live GPS, battery, attitude, link
+  health, mission progress, serial port + sensor health.
+- **Camera** — capture/recording status and manual controls.
+- **Mission Files** — history, search, replay map, photos, log, ZIP export.
+- **Logs** / **Settings** — live app log tail, server planning defaults.
+
+Build it before starting the server (`web/dist` is what `/` serves):
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+`npm run dev` runs a hot-reloading dev server on `:5173` against a backend
+on `:8000` (CORS is already permissive in `main.py` for this).
 
 ## Mission automation
 

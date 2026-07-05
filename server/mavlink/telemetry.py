@@ -4,7 +4,6 @@ Telemetry snapshot builder.
 Reads from the shared DroneState (populated by the MAVLink receiver thread)
 and constructs the Pydantic TelemetryData model returned to the frontend.
 """
-import time
 from mavlink.connection import drone_state, MAV_STATE_NAMES, GPS_FIX_NAMES
 from models.telemetry import (
     TelemetryData,

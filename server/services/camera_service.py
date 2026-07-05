@@ -131,19 +131,47 @@ class CameraService:
         with self._lock:
             return self._latest_frame
 
-    def capture_photo(self, path: Path) -> bool:
-        """Write the latest frame to *path* as a JPEG. Returns False if no frame."""
+    def capture_photo(
+        self, path: Path, thumb_path: Optional[Path] = None, thumb_width: int = 320
+    ) -> bool:
+        """Write the latest frame to *path* as a JPEG, verifying the file
+        actually landed on disk with content. Returns False if no frame was
+        available, the write failed, or the resulting file is missing/empty.
+
+        If *thumb_path* is given, also writes a small resized JPEG there —
+        used for the frontend gallery so it never has to pull full-res
+        images just to render a grid of previews. Thumbnail failures are
+        logged but never fail the main capture (non-critical, best-effort).
+        """
         frame = self.get_frame()
         if frame is None:
             logger.warning("Photo capture failed: no camera frame available")
             return False
+
         path.parent.mkdir(parents=True, exist_ok=True)
         ok = cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        if ok:
-            logger.info("Photo captured: %s", path)
-        else:
+        if not ok:
             logger.error("cv2.imwrite failed for %s", path)
-        return ok
+            return False
+        if not path.exists() or path.stat().st_size == 0:
+            logger.error("Photo file missing or empty after write: %s", path)
+            return False
+        logger.info("Photo captured: %s", path)
+
+        if thumb_path is not None:
+            try:
+                thumb_path.parent.mkdir(parents=True, exist_ok=True)
+                height, width = frame.shape[:2]
+                thumb_height = max(1, round(height * (thumb_width / width)))
+                thumb = cv2.resize(
+                    frame, (thumb_width, thumb_height), interpolation=cv2.INTER_AREA
+                )
+                if not cv2.imwrite(str(thumb_path), thumb, [cv2.IMWRITE_JPEG_QUALITY, 80]):
+                    logger.warning("Thumbnail write failed for %s", thumb_path)
+            except Exception:
+                logger.exception("Thumbnail generation failed for %s (non-fatal)", path)
+
+        return True
 
     def get_stats(self) -> FrameStats:
         now = time.monotonic()
