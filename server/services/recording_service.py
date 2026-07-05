@@ -1,10 +1,9 @@
 """Video recording service.
 
 Writes the shared CameraService's published frames to an .mp4 file on a
-dedicated thread, paced at the camera's configured fps. Completely
-independent from streaming: it shares only the read-only frame pointer with
-the WebRTC path, so a streaming failure never interrupts a recording (and
-vice versa).
+dedicated thread, paced at the camera's configured fps — it only ever reads
+the read-only frame pointer, never the capture device itself, so it can't
+interfere with photo capture or camera reconnects.
 
 If the camera drops out mid-recording, the recorder keeps running and
 resumes writing frames as soon as the camera reconnects — the file stays

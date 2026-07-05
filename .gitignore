@@ -15,16 +15,11 @@ logs/*.log*
 server/missions/
 server/uploads/missions/*
 !server/uploads/missions/.gitkeep
-Autoflight/backend/uploads/missions/*
-!Autoflight/backend/uploads/missions/.gitkeep
 
 # IDE / local settings
 .claude/
 .idea/
 .vscode/
-
-# preserved history of the original standalone repos
-.git-backup/
 
 # local configuration overrides
 server/.env
