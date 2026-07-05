@@ -1,12 +1,10 @@
 """Threaded USB camera capture service.
 
-Adapted from the Webcam project's backend/services/camera.py.
-
 One background thread owns the `cv2.VideoCapture` exclusively, opens it once,
-and publishes the latest decoded frame. Consumers (WebRTC track, recorder,
-photo capture, status endpoints) read the published frame without touching
-the capture device. If the camera disconnects, the thread automatically
-retries opening it with backoff — the service never dies.
+and publishes the latest decoded frame. Consumers (recorder, photo capture,
+status endpoints) read the published frame without touching the capture
+device. If the camera disconnects, the thread automatically retries opening
+it with backoff — the service never dies.
 """
 
 from __future__ import annotations
@@ -295,20 +293,6 @@ class CameraService:
     def _release_capture(self, cap: cv2.VideoCapture) -> None:
         cap.release()
         logger.info("Camera device released")
-
-
-def make_placeholder_frame(width: int, height: int, message: str = "NO CAMERA SIGNAL") -> np.ndarray:
-    """Generate a black frame with a status message.
-
-    Used by the WebRTC video track when no real frame has been captured yet,
-    so a peer connection can still negotiate and display something meaningful.
-    """
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size = cv2.getTextSize(message, font, 1.0, 2)[0]
-    origin = ((width - text_size[0]) // 2, (height + text_size[1]) // 2)
-    cv2.putText(frame, message, origin, font, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
-    return frame
 
 
 # Module-level singleton — imported by streaming, recording, and mission runner

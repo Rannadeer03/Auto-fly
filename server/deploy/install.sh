@@ -18,7 +18,22 @@ echo "==> Installing DronAI from $SERVER_DIR (user: $RUN_USER)"
 # ── System packages ────────────────────────────────────────────────────────────
 echo "==> Installing system packages"
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-dev v4l-utils network-manager nodejs npm
+sudo apt-get install -y python3-venv python3-dev v4l-utils network-manager
+
+# Node.js: the frontend build (Vite 8) requires Node ^20.19.0 or >=22.12.0.
+# Raspberry Pi OS (Debian bookworm) ships Node 18.x via apt, which is too old
+# and would fail the build with a confusing error — install a current LTS
+# from NodeSource instead of trusting whatever the distro repo has.
+NODE_MAJOR_REQUIRED=20
+CURRENT_NODE_MAJOR="$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || echo 0)"
+[ -z "$CURRENT_NODE_MAJOR" ] && CURRENT_NODE_MAJOR=0
+if [ "$CURRENT_NODE_MAJOR" -lt "$NODE_MAJOR_REQUIRED" ]; then
+    echo "==> Installing Node.js 22.x LTS (found: $(node -v 2>/dev/null || echo none), need >=${NODE_MAJOR_REQUIRED})"
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+else
+    echo "==> Node.js $(node -v) already satisfies the >=${NODE_MAJOR_REQUIRED} requirement"
+fi
 
 # ── Wi-Fi auto-connect (values come from server/config.py) ─────────────────────
 WIFI_SSID="$(python3 -c "import sys; sys.path.insert(0,'$SERVER_DIR'); from config import settings; print(settings.WIFI_SSID)")"

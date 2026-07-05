@@ -49,7 +49,7 @@ it just serves the built app (`web/dist`) and the JSON/mission APIs it calls.
 - **Telemetry** / **Drone Status** — live GPS, battery, attitude, link
   health, mission progress, serial port + sensor health.
 - **Camera** — capture/recording status and manual controls.
-- **Mission Files** — history, search, replay map, photos, log, ZIP export.
+- **Mission Files** — history, search, replay map, image gallery + metadata, log, ZIP export.
 - **Logs** / **Settings** — live app log tail, server planning defaults.
 
 Build it before starting the server (`web/dist` is what `/` serves):
@@ -67,27 +67,44 @@ on `:8000` (CORS is already permissive in `main.py` for this).
 
 On `POST /start` (or the START button) a mission session begins:
 
-- an isolated folder `missions/mission_<timestamp>/` is created,
+- an isolated folder `missions/<Mission_Name>_<timestamp>/` is created
+  (falls back to `missions/mission_<timestamp>/` if no mission name was set),
 - video recording starts (disable with `RECORDING_ENABLED=0`),
 - the flight plan is saved as `mission.json`,
-- the drone flies the mission normally — it is **never paused**. Photos are
-  captured continuously for mapping, every `PHOTO_DISTANCE_M` metres of
-  travel (or every `PHOTO_INTERVAL_S` seconds in `time` mode). Each photo is
-  geotagged from live telemetry into `mapping/photos.json`.
+- photo capture follows the active `CAPTURE_STRATEGY`
+  (`services/capture_strategies.py`):
+  - **`hover`** (default) — every survey waypoint holds position; the Pi
+    waits for the airframe to be confirmed stable (ground speed and all
+    three angular rates below threshold, capped at a 3s max-wait so a
+    mission never stalls) before firing the shutter, then confirms the
+    file actually saved before marking that waypoint captured. Exactly one
+    photo per waypoint, never a duplicate, and a failed capture is logged
+    and retried (same waypoint only) without aborting the mission.
+  - **`continuous`** (reserved for future use) — the drone never stops;
+    photos are triggered every `PHOTO_DISTANCE_M` metres of travel (or
+    every `PHOTO_INTERVAL_S` seconds in `time` mode).
+  
+  Every photo's full metadata (position, attitude, waypoint number, capture
+  sequence, drone speed, GPS fix quality, satellite count, camera
+  orientation, mission name/ID) is accumulated during the flight and written
+  to `metadata.json`/`metadata.csv` at the end. A thumbnail is generated
+  alongside each full-resolution photo for the frontend gallery.
 - when the vehicle disarms (mission finished), recording stops and all files
   are finalised.
 
 Mission folder layout:
 
 ```
-missions/mission_<timestamp>/
+missions/<Mission_Name>_<timestamp>/
 ├── video.mp4
-├── photos/photo_00001.jpg …
+├── images/
+│   ├── photo_00001.jpg …
+│   └── thumbs/photo_00001_thumb.jpg …
 ├── logs/mission.log
 ├── telemetry.json
-├── metadata.json
-├── mission.json
-└── mapping/photos.json
+├── metadata.json        # mission summary + full per-image metadata array
+├── metadata.csv          # per-image metadata, flattened
+└── mission.json          # the flight plan that was executed
 ```
 
 ## API
@@ -129,10 +146,15 @@ source.
 | `LINK_STALE_S` | `10` | Heartbeat staleness before auto-reconnect |
 | `CAMERA_DEVICE` | `auto` | USB camera (`auto` scans /dev/video*) |
 | `CAMERA_HFOV_DEG` / `CAMERA_VFOV_DEG` | `62.2` / `48.8` | Lens FOV for overlap math |
-| `PHOTO_CAPTURE_MODE` | `distance` | `distance` or `time` |
-| `PHOTO_DISTANCE_M` | `10` | Metres between mapping photos |
-| `PHOTO_INTERVAL_S` | `2` | Seconds between photos (time mode) |
+| `CAMERA_PITCH_DEG` | `-90` | Fixed camera mounting angle (no gimbal); recorded into every photo's metadata |
+| `CAPTURE_STRATEGY` | `hover` | `hover` (position-hold-and-shoot) or `continuous` (reserved) |
+| `HOVER_HOLD_TIME_S` | `1.0` | Seconds ArduCopter loiters at each survey waypoint |
+| `PHOTO_CAPTURE_MODE` | `distance` | `distance` or `time` — only used when `CAPTURE_STRATEGY=continuous` |
+| `PHOTO_DISTANCE_M` | `10` | Metres between mapping photos (continuous mode) |
+| `PHOTO_INTERVAL_S` | `2` | Seconds between photos (continuous + time mode) |
 | `RECORDING_ENABLED` | `1` | Record video during missions |
+| `MIN_BATTERY_VOLTAGE` / `MIN_BATTERY_PERCENT` | `22.2` / `20` | Below this, ARM is rejected |
+| `MIN_GPS_SATELLITES` / `REQUIRED_GPS_FIX` | `6` / `3` | Below this, ARM/AUTO is rejected |
 | `DEFAULT_ALTITUDE_M` / `DEFAULT_SPEED_MS` | `30` / `5` | Planning defaults |
 | `DEFAULT_SIDE_OVERLAP_PCT` / `DEFAULT_FRONT_OVERLAP_PCT` | `65` / `75` | Overlap defaults |
 | `MISSIONS_DIR` | `server/missions` | Mission output root |
