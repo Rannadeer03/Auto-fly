@@ -13,6 +13,9 @@ const DroneStatusPage = lazy(() =>
   import('@/pages/drone-status-page').then((m) => ({ default: m.DroneStatusPage })),
 )
 const CameraPage = lazy(() => import('@/pages/camera-page').then((m) => ({ default: m.CameraPage })))
+const MissionLibraryPage = lazy(() =>
+  import('@/pages/mission-library-page').then((m) => ({ default: m.MissionLibraryPage })),
+)
 const MissionFilesPage = lazy(() =>
   import('@/pages/mission-files-page').then((m) => ({ default: m.MissionFilesPage })),
 )
@@ -52,6 +55,7 @@ export default function App() {
               {activeSection === 'telemetry' && <TelemetryPage />}
               {activeSection === 'drone-status' && <DroneStatusPage />}
               {activeSection === 'camera' && <CameraPage />}
+              {activeSection === 'mission-library' && <MissionLibraryPage />}
               {activeSection === 'mission-files' && <MissionFilesPage />}
               {activeSection === 'logs' && <LogsPage />}
               {activeSection === 'settings' && <SettingsPage />}

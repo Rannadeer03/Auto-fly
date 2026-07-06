@@ -31,7 +31,8 @@ export function StatusBanner() {
   if (status.droneConnected && !status.gpsOk && (section === 'mission' || section === 'drone-status')) {
     return (
       <Banner tone="warning" icon={<SatelliteDish className="h-4 w-4" />}>
-        GPS fix unavailable — a 3D fix is required before arming and flying a survey.
+        GPS fix unavailable — this app does not block arming or flight on it, but ArduPilot's own
+        pre-arm checks may still refuse to arm without one.
       </Banner>
     )
   }

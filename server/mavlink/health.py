@@ -1,8 +1,12 @@
 """
 Pre-flight safety checks.
 
-Every safety-critical operation (ARM, AUTO) goes through this module before
-any MAVLink command is sent. No exceptions.
+By design this module only gates on conditions that make sending the MAVLink
+command itself meaningless (no link, no mission loaded) — GPS fix, satellite
+count, battery, and EKF health are surfaced to the operator (see
+TelemetryData.health / the frontend status banner) but never block ARM or
+AUTO from this app. ArduPilot's own EKENS/pre-arm checks and QGroundControl
+remain the authority on whether it is actually safe to fly.
 """
 import logging
 from mavlink.connection import DroneState
@@ -29,7 +33,12 @@ class HealthChecker:
     """Validates drone state before permitting safety-critical operations."""
 
     def check_arm_ready(self, state: DroneState) -> CheckResult:
-        """All conditions that must be true before the ARM command is sent."""
+        """All conditions that must be true before the ARM command is sent.
+
+        Only a live link and a mission loaded on the vehicle are required —
+        GPS fix, satellite count, battery, and EKF are ArduPilot's/QGC's
+        responsibility, not this app's. See module docstring.
+        """
         failures: list[str] = []
 
         if not state.connected:
@@ -37,22 +46,6 @@ class HealthChecker:
         elif not state.heartbeat_ok:
             failures.append(f"Heartbeat lost ({state.last_heartbeat_ago_s:.1f}s ago).")
 
-        if state.battery_voltage > 0 and state.battery_voltage < settings.MIN_BATTERY_VOLTAGE:
-            failures.append(
-                f"Battery voltage {state.battery_voltage:.1f}V below minimum {settings.MIN_BATTERY_VOLTAGE}V."
-            )
-        if state.battery_remaining not in (-1,) and state.battery_remaining < settings.MIN_BATTERY_PERCENT:
-            failures.append(
-                f"Battery {state.battery_remaining}% below minimum {settings.MIN_BATTERY_PERCENT}%."
-            )
-        if state.gps_fix_type < settings.REQUIRED_GPS_FIX:
-            failures.append(
-                f"GPS fix type {state.gps_fix_type} insufficient (need ≥{settings.REQUIRED_GPS_FIX})."
-            )
-        if state.gps_satellites < settings.MIN_GPS_SATELLITES:
-            failures.append(
-                f"Only {state.gps_satellites} GPS satellites (need ≥{settings.MIN_GPS_SATELLITES})."
-            )
         if not state.mission_uploaded:
             failures.append("No mission loaded on vehicle.")
 
@@ -62,7 +55,12 @@ class HealthChecker:
         return CheckResult(len(failures) == 0, failures)
 
     def check_auto_ready(self, state: DroneState) -> CheckResult:
-        """All conditions that must be true before switching to AUTO."""
+        """All conditions that must be true before switching to AUTO.
+
+        Only armed + a real mission loaded are required — GPS fix and EKF
+        health are ArduPilot's/QGC's responsibility, not this app's. See
+        module docstring.
+        """
         failures: list[str] = []
 
         if not state.armed:
@@ -71,10 +69,6 @@ class HealthChecker:
             failures.append("No mission loaded on vehicle.")
         if state.waypoint_count < 1:
             failures.append("Mission has no waypoints.")
-        if not state.ekf_ok:
-            failures.append("EKF not healthy — check sensors.")
-        if state.gps_fix_type < settings.REQUIRED_GPS_FIX:
-            failures.append(f"GPS fix type {state.gps_fix_type} insufficient.")
         if not state.heartbeat_ok:
             failures.append("Heartbeat lost.")
 

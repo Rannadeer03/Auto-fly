@@ -161,6 +161,12 @@ class Settings:
 
     # ── Storage ────────────────────────────────────────────────────────────────
     MISSIONS_DIR: Path = Path(os.environ.get("MISSIONS_DIR", str(BASE_DIR / "missions")))
+    # Saved, reusable mission *plans* (pre-flight — polygon + params + the
+    # generated waypoints), distinct from MISSIONS_DIR's post-flight session
+    # archives (photos/video/logs from a completed flight).
+    MISSION_LIBRARY_DIR: Path = Path(
+        os.environ.get("MISSION_LIBRARY_DIR", str(BASE_DIR / "mission_library"))
+    )
 
     # ── File upload ────────────────────────────────────────────────────────────
     MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "10")) * 1024 * 1024
