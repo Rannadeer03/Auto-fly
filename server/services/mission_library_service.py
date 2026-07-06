@@ -76,27 +76,51 @@ class MissionLibraryService:
         self,
         name: str,
         description: str,
-        polygon: list[tuple[float, float]],
-        params: dict,
         mission: Mission,
         plan_info: Optional[dict],
+        *,
+        mode: str = "survey",
+        polygon: Optional[list[tuple[float, float]]] = None,
+        params: Optional[dict] = None,
+        launch: Optional[tuple[float, float]] = None,
+        home: Optional[tuple[float, float]] = None,
+        manual_waypoints: Optional[list[dict]] = None,
     ) -> dict:
+        """Persist a new library entry.
+
+        *mode* is a free-form discriminator ("survey" | "manual") — absent
+        on any entry saved before this field existed, which callers should
+        treat as "survey" (see _summarise). Survey entries carry
+        polygon/params (regenerable via grid_planner); manual entries carry
+        launch/home/manual_waypoints (regenerable via manual_mission_builder).
+        Both are optional here so this one method serves either shape
+        without forcing irrelevant fields on the other.
+        """
         with self._lock:
             entry_id = self._new_id(name)
-            record = {
+            record: dict = {
                 "id": entry_id,
                 "name": name.strip() or entry_id,
                 "description": description.strip(),
                 "created_at": _utc_now_iso(),
                 "updated_at": _utc_now_iso(),
-                "polygon": [list(p) for p in polygon],
-                "params": params,
+                "mode": mode,
                 "mission": mission.model_dump(),
                 "plan_info": plan_info,
             }
+            if polygon is not None:
+                record["polygon"] = [list(p) for p in polygon]
+            if params is not None:
+                record["params"] = params
+            if launch is not None:
+                record["launch"] = list(launch)
+            if home is not None:
+                record["home"] = list(home)
+            if manual_waypoints is not None:
+                record["manual_waypoints"] = manual_waypoints
             path = settings.MISSION_LIBRARY_DIR / f"{entry_id}.json"
             path.write_text(json.dumps(record, indent=2, default=str))
-            logger.info("Mission library entry saved: %s", entry_id)
+            logger.info("Mission library entry saved: %s (mode=%s)", entry_id, mode)
             return record
 
     def get(self, entry_id: str) -> Optional[dict]:
@@ -191,6 +215,9 @@ class MissionLibraryService:
             "description": record.get("description", ""),
             "created_at": record.get("created_at"),
             "updated_at": record.get("updated_at"),
+            # Entries saved before "mode" existed have no such key — treat
+            # those (survey-only, at the time) as "survey".
+            "mode": record.get("mode", "survey"),
             "waypoint_count": mission.get("waypoint_count", 0),
             "total_distance_km": mission.get("total_distance_km", 0.0),
             "estimated_duration_minutes": mission.get("estimated_duration_minutes", 0.0),

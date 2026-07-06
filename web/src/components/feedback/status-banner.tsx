@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
-import { AlertTriangle, CameraOff, SatelliteDish, WifiOff } from 'lucide-react'
+import { AlertTriangle, CameraOff, MapPinOff, SatelliteDish, WifiOff } from 'lucide-react'
 import { useConnectionStatus } from '@/hooks/use-connection-status'
+import { useGeolocationStore } from '@/store/geolocation-store'
 import { useUiStore } from '@/store/ui-store'
 
 /** Slim, always-on-top banner for conditions that block or degrade mission
@@ -9,12 +10,31 @@ import { useUiStore } from '@/store/ui-store'
 export function StatusBanner() {
   const status = useConnectionStatus()
   const section = useUiStore((s) => s.activeSection)
+  const geoStatus = useGeolocationStore((s) => s.status)
 
   if (!status.backendOnline) {
     return (
       <Banner tone="danger" icon={<WifiOff className="h-4 w-4" />}>
         Backend unreachable — check that the drone computer is powered on and reachable on the
         network.
+      </Banner>
+    )
+  }
+
+  if (section === 'mission' && geoStatus === 'insecure-context') {
+    return (
+      <Banner tone="warning" icon={<MapPinOff className="h-4 w-4" />}>
+        "My Location" is unavailable — browsers only allow geolocation over HTTPS or localhost.
+        Access this app over HTTPS, or from the Pi itself, to enable it.
+      </Banner>
+    )
+  }
+
+  if (section === 'mission' && geoStatus === 'denied') {
+    return (
+      <Banner tone="warning" icon={<MapPinOff className="h-4 w-4" />}>
+        Location permission denied — allow location access for this site in your browser settings
+        to show "My Location" on the map.
       </Banner>
     )
   }

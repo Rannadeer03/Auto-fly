@@ -3,23 +3,29 @@ import { Library } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Input, Textarea } from '@/components/ui/input'
-import { useSaveToLibrary } from '@/features/mission-library/hooks/use-mission-library'
+import { useSaveManualToLibrary, useSaveToLibrary } from '@/features/mission-library/hooks/use-mission-library'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { useUiStore } from '@/store/ui-store'
 
 interface SaveToLibraryButtonProps {
   disabled?: boolean
   iconOnly?: boolean
 }
 
-/** Saves the currently drawn + generated survey as a reusable Mission
- * Library entry — independent of uploading it to the drone. */
+/** Saves the currently drawn + generated survey (or manual path) as a
+ * reusable Mission Library entry — independent of uploading it to the
+ * drone. Both save hooks are always called (rules of hooks) — only one is
+ * ever actually invoked, based on missionMode. */
 export function SaveToLibraryButton({ disabled, iconOnly }: SaveToLibraryButtonProps) {
   const [open, setOpen] = useState(false)
+  const missionMode = useUiStore((s) => s.missionMode)
   const missionName = useMissionDraftStore((s) => s.flightParams.missionName)
   const missionDescription = useMissionDraftStore((s) => s.flightParams.missionDescription)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const save = useSaveToLibrary()
+  const saveSurvey = useSaveToLibrary()
+  const saveManual = useSaveManualToLibrary()
+  const save = missionMode === 'survey' ? saveSurvey : saveManual
 
   const openDialog = () => {
     setName(missionName || '')
@@ -52,8 +58,9 @@ export function SaveToLibraryButton({ disabled, iconOnly }: SaveToLibraryButtonP
         <DialogContent>
           <DialogTitle>Save mission to library</DialogTitle>
           <DialogDescription>
-            Stores this survey (boundary, waypoints, altitude, speed, overlap, camera settings) so
-            it can be reused later.
+            {missionMode === 'survey'
+              ? 'Stores this survey (boundary, waypoints, altitude, speed, overlap, camera settings) so it can be reused later.'
+              : 'Stores this manual mission (launch, home, and waypoints) so it can be reused later.'}
           </DialogDescription>
           <div className="mt-4 space-y-2">
             <Input

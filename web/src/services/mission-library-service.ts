@@ -3,12 +3,17 @@ import type {
   DeployLibraryResponse,
   LibraryEntry,
   LibraryListResponse,
+  ManualSaveToLibraryRequest,
   SaveToLibraryRequest,
   SaveToLibraryResponse,
 } from '@/types/mission-library'
 
 export function saveToLibrary(body: SaveToLibraryRequest): Promise<SaveToLibraryResponse> {
   return apiPost<SaveToLibraryResponse>('/mission-library', body)
+}
+
+export function saveManualToLibrary(body: ManualSaveToLibraryRequest): Promise<SaveToLibraryResponse> {
+  return apiPost<SaveToLibraryResponse>('/mission-library/manual', body)
 }
 
 export function listLibrary(query: string, signal?: AbortSignal): Promise<LibraryListResponse> {

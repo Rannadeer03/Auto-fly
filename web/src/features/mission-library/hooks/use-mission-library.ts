@@ -7,12 +7,17 @@ import {
   fetchLibraryEntry,
   listLibrary,
   renameLibraryEntry,
+  saveManualToLibrary,
   saveToLibrary,
 } from '@/services/mission-library-service'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
 import { useUiStore } from '@/store/ui-store'
 import { toBackendPolygon, longestEdgeAngleDeg } from '@/utils/geo'
-import type { SaveToLibraryRequest } from '@/types/mission-library'
+import type {
+  ManualSaveToLibraryRequest,
+  SaveToLibraryRequest,
+  SurveyLibraryParams,
+} from '@/types/mission-library'
 
 const LIBRARY_KEY = ['mission-library']
 
@@ -71,6 +76,39 @@ export function useSaveToLibrary() {
   })
 }
 
+/** Manual Mission Mode's counterpart to useSaveToLibrary — saves the
+ * currently placed launch/home/path as a reusable library entry. */
+export function useSaveManualToLibrary() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (vars: { name: string; description: string }) => {
+      const { manualLaunch, manualHome, manualWaypoints, flightParams } =
+        useMissionDraftStore.getState()
+      if (!manualLaunch || !manualHome) {
+        throw new Error('Place a Launch and Home marker before saving to the library.')
+      }
+      if (manualWaypoints.length < 1) {
+        throw new Error('Add at least one waypoint before saving to the library.')
+      }
+      const body: ManualSaveToLibraryRequest = {
+        name: vars.name,
+        description: vars.description,
+        launch: manualLaunch,
+        home: manualHome,
+        waypoints: manualWaypoints.map((w) => ({ lat: w.lat, lon: w.lng, altitude_m: w.altitude })),
+        speed_ms: flightParams.speedMs,
+      }
+      return saveManualToLibrary(body)
+    },
+    onSuccess: (res) => {
+      toast.success(res.message)
+      queryClient.invalidateQueries({ queryKey: LIBRARY_KEY })
+    },
+    onError: (err: Error) => toast.error(`Save to library failed — ${err.message}`),
+  })
+}
+
 export function useRenameLibraryEntry() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -110,13 +148,21 @@ export function useDeleteLibraryEntry() {
 
 /** Uploads a saved plan straight to the connected drone, then loads it into
  * the mission-draft store and switches to the Mission map so the operator
- * sees exactly what was deployed. Never blocked by verification failing. */
+ * sees exactly what was deployed. Never blocked by verification failing.
+ * Branches on the entry's mode so a Manual plan repopulates
+ * launch/home/waypoints (and flips missionMode to 'manual') instead of a
+ * farm boundary. */
 export function useDeployLibraryEntry() {
   const queryClient = useQueryClient()
   const setFarmPolygon = useMissionDraftStore((s) => s.setFarmPolygon)
+  const setManualLaunch = useMissionDraftStore((s) => s.setManualLaunch)
+  const setManualHome = useMissionDraftStore((s) => s.setManualHome)
+  const addManualWaypoint = useMissionDraftStore((s) => s.addManualWaypoint)
+  const clearManualMission = useMissionDraftStore((s) => s.clearManualMission)
   const updateFlightParams = useMissionDraftStore((s) => s.updateFlightParams)
   const setGenerated = useMissionDraftStore((s) => s.setGenerated)
   const setActiveSection = useUiStore((s) => s.setActiveSection)
+  const setMissionMode = useUiStore((s) => s.setMissionMode)
 
   return useMutation({
     mutationFn: (id: string) => deployLibraryEntry(id),
@@ -125,17 +171,33 @@ export function useDeployLibraryEntry() {
       else if (res.uploaded_to_drone) toast.warning(res.message)
       else toast.info(res.message)
 
-      updateFlightParams({
-        altitudeM: res.params.altitude_m,
-        speedMs: res.params.speed_ms,
-        sideOverlapPct: res.params.side_overlap_pct,
-        frontOverlapPct: res.params.front_overlap_pct,
-        angleDeg: res.params.angle_deg,
-        captureMode: res.params.capture_mode,
-        holdTimeS: res.params.hold_time_s,
-        cameraAngleDeg: res.params.camera_angle_deg,
-      })
-      setFarmPolygon(res.polygon.map(([lat, lng]) => [lng, lat]))
+      if (res.mode === 'manual') {
+        setMissionMode('manual')
+        clearManualMission()
+        const params = res.params as { speed_ms: number } | null | undefined
+        updateFlightParams({ speedMs: params?.speed_ms ?? 5 })
+        if (res.launch) setManualLaunch(res.launch)
+        if (res.home) setManualHome(res.home)
+        for (const w of res.manual_waypoints ?? []) {
+          addManualWaypoint({ lat: w.lat, lng: w.lon, altitude: w.altitude_m })
+        }
+      } else {
+        setMissionMode('survey')
+        const params = res.params as SurveyLibraryParams | null | undefined
+        if (params) {
+          updateFlightParams({
+            altitudeM: params.altitude_m,
+            speedMs: params.speed_ms,
+            sideOverlapPct: params.side_overlap_pct,
+            frontOverlapPct: params.front_overlap_pct,
+            angleDeg: params.angle_deg,
+            captureMode: params.capture_mode,
+            holdTimeS: params.hold_time_s,
+            cameraAngleDeg: params.camera_angle_deg,
+          })
+        }
+        setFarmPolygon((res.polygon ?? []).map(([lat, lng]) => [lng, lat]))
+      }
       setGenerated(res)
       setActiveSection('mission')
 

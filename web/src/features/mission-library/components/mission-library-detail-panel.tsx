@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { Copy, Download, Pencil, Trash2, UploadCloud, X } from 'lucide-react'
 import { Panel, PanelBody, PanelHeader, PanelTitle } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input, Textarea } from '@/components/ui/input'
 import { StatTile } from '@/components/ui/stat-tile'
 import { ConfirmDialog } from '@/components/feedback/confirm-dialog'
@@ -13,6 +14,7 @@ import {
   useRenameLibraryEntry,
 } from '@/features/mission-library/hooks/use-mission-library'
 import { libraryDownloadUrl } from '@/services/mission-library-service'
+import type { SurveyLibraryParams } from '@/types/mission-library'
 import { formatDistance, formatDuration, formatPercent, formatTimestamp } from '@/utils/format'
 
 interface MissionLibraryDetailPanelProps {
@@ -56,9 +58,14 @@ export function MissionLibraryDetailPanel({ id, onClose, onDeleted }: MissionLib
     <Panel className="flex h-full flex-col overflow-hidden">
       <PanelHeader>
         <div className="min-w-0">
-          <PanelTitle className="truncate normal-case tracking-normal text-sm text-text-primary">
-            {entry.name}
-          </PanelTitle>
+          <div className="flex items-center gap-2">
+            <PanelTitle className="truncate normal-case tracking-normal text-sm text-text-primary">
+              {entry.name}
+            </PanelTitle>
+            <Badge variant={entry.mode === 'manual' ? 'accent' : 'neutral'}>
+              {entry.mode === 'manual' ? 'Manual' : 'Survey'}
+            </Badge>
+          </div>
           <p className="text-[11px] text-text-tertiary">Saved {formatTimestamp(entry.created_at)}</p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -123,14 +130,25 @@ export function MissionLibraryDetailPanel({ id, onClose, onDeleted }: MissionLib
           <StatTile label="Battery" value={formatPercent(entry.estimated_battery_percent)} />
         </div>
 
-        <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3">
-          <MetaField label="Altitude">{entry.params.altitude_m} m</MetaField>
-          <MetaField label="Speed">{entry.params.speed_ms} m/s</MetaField>
-          <MetaField label="Side overlap">{entry.params.side_overlap_pct}%</MetaField>
-          <MetaField label="Front overlap">{entry.params.front_overlap_pct}%</MetaField>
-          <MetaField label="Grid angle">{entry.params.angle_deg}°</MetaField>
-          <MetaField label="Capture mode">{entry.params.capture_mode}</MetaField>
-        </div>
+        {entry.mode === 'manual' ? (
+          <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3">
+            <MetaField label="Speed">{entry.params.speed_ms} m/s</MetaField>
+          </div>
+        ) : (
+          (() => {
+            const params = entry.params as SurveyLibraryParams
+            return (
+              <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3">
+                <MetaField label="Altitude">{params.altitude_m} m</MetaField>
+                <MetaField label="Speed">{params.speed_ms} m/s</MetaField>
+                <MetaField label="Side overlap">{params.side_overlap_pct}%</MetaField>
+                <MetaField label="Front overlap">{params.front_overlap_pct}%</MetaField>
+                <MetaField label="Grid angle">{params.angle_deg}°</MetaField>
+                <MetaField label="Capture mode">{params.capture_mode}</MetaField>
+              </div>
+            )
+          })()
+        )}
 
         <Button
           className="w-full"

@@ -1,7 +1,9 @@
 // Mirrors server/services/mission_library_service.py and server/api/mission_library.py
 import type { CaptureMode, GridResponse, Mission, PlanInfo } from '@/types/mission'
 
-export interface LibraryParams {
+export type LibraryMode = 'survey' | 'manual'
+
+export interface SurveyLibraryParams {
   altitude_m: number
   speed_ms: number
   side_overlap_pct: number
@@ -12,12 +14,25 @@ export interface LibraryParams {
   camera_angle_deg: number
 }
 
+export interface ManualLibraryParams {
+  speed_ms: number
+}
+
+export type LibraryParams = SurveyLibraryParams | ManualLibraryParams
+
+export interface ManualLibraryWaypoint {
+  lat: number
+  lon: number
+  altitude_m: number
+}
+
 export interface LibrarySummary {
   id: string
   name: string
   description: string
   created_at: string
   updated_at: string
+  mode: LibraryMode
   waypoint_count: number
   total_distance_km: number
   estimated_duration_minutes: number
@@ -26,7 +41,12 @@ export interface LibrarySummary {
 }
 
 export interface LibraryEntry extends LibrarySummary {
-  polygon: [number, number][]
+  // Survey-only
+  polygon?: [number, number][]
+  // Manual-only
+  launch?: [number, number]
+  home?: [number, number]
+  manual_waypoints?: ManualLibraryWaypoint[]
   mission: Mission
   plan_info: PlanInfo | null
 }
@@ -51,6 +71,15 @@ export interface SaveToLibraryRequest {
   camera_angle_deg?: number
 }
 
+export interface ManualSaveToLibraryRequest {
+  name: string
+  description: string
+  launch: [number, number]
+  home: [number, number]
+  waypoints: ManualLibraryWaypoint[]
+  speed_ms: number
+}
+
 export interface SaveToLibraryResponse {
   success: boolean
   message: string
@@ -58,6 +87,10 @@ export interface SaveToLibraryResponse {
 }
 
 export interface DeployLibraryResponse extends GridResponse {
-  polygon: [number, number][]
-  params: LibraryParams
+  mode: LibraryMode
+  polygon?: [number, number][] | null
+  params?: LibraryParams | null
+  launch?: [number, number] | null
+  home?: [number, number] | null
+  manual_waypoints?: ManualLibraryWaypoint[] | null
 }

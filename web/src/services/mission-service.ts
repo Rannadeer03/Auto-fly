@@ -3,6 +3,7 @@ import type {
   ApiResponse,
   GridRequest,
   GridResponse,
+  ManualMissionRequest,
   MissionSessionStatus,
   MissionStatus,
   PlanningConfig,
@@ -14,6 +15,13 @@ export function generateSurveyMission(
   signal?: AbortSignal,
 ): Promise<GridResponse> {
   return apiPost<GridResponse>('/mission/generate', body, signal)
+}
+
+export function generateManualMission(
+  body: ManualMissionRequest,
+  signal?: AbortSignal,
+): Promise<GridResponse> {
+  return apiPost<GridResponse>('/mission/generate-manual', body, signal)
 }
 
 export function fetchMissionStatus(signal?: AbortSignal): Promise<MissionStatus> {
