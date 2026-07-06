@@ -91,6 +91,15 @@ else
     echo "    return a 'frontend not built' placeholder at / until this is fixed."
 fi
 
+# ── HTTPS (self-signed) ─────────────────────────────────────────────────────────
+# Browsers only expose the Geolocation API ("My Location") in a secure
+# context — HTTPS, or localhost — so serve this over HTTPS rather than the
+# plain-HTTP LAN address the Pi would otherwise be reached at. Also
+# regenerated on every boot (dronai.service) in case DHCP hands out a
+# different IP later.
+echo "==> Generating self-signed HTTPS certificate"
+bash "$SERVER_DIR/deploy/generate-cert.sh" || echo "    WARNING: certificate generation failed — the server will fall back to HTTP."
+
 # ── systemd service ────────────────────────────────────────────────────────────
 echo "==> Installing systemd service"
 # Rewrite the unit's paths/user to match this checkout before installing.
@@ -114,7 +123,15 @@ echo "  1. Connect to Wi-Fi '$WIFI_SSID' and verify connectivity"
 echo "  2. Start DronAI (systemd service 'dronai')"
 echo "  3. Connect to the Pixhawk on $PIXHAWK_PORT (UART)"
 echo "  4. Initialise the camera and mapping system"
-echo "  5. Serve the website on http://<pi-ip>:$API_PORT"
+if [ -f "$SERVER_DIR/deploy/certs/dronai.crt" ]; then
+    echo "  5. Serve the website on https://<pi-ip>:$API_PORT"
+    echo ""
+    echo "The certificate is self-signed — your browser will show a one-time"
+    echo "warning the first time you visit; accept it to continue. This is what"
+    echo "makes 'My Location' work (browsers block geolocation on plain HTTP)."
+else
+    echo "  5. Serve the website on http://<pi-ip>:$API_PORT (HTTPS unavailable — see warning above)"
+fi
 echo ""
 echo "Useful commands:"
 echo "  sudo systemctl status dronai     # service status"

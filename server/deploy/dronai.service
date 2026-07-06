@@ -18,6 +18,11 @@ Environment=PATH=/home/pi/DronAi/server/.venv/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
 # Verify Wi-Fi/network before starting (logs outcome; never blocks startup).
 ExecStartPre=/bin/bash /home/pi/DronAi/server/deploy/wait-for-network.sh
+# Regenerate the self-signed HTTPS cert if the Pi's DHCP-assigned LAN IP has
+# changed since the last boot (needs the network to be up first — hence
+# after wait-for-network.sh). No-ops quickly if the existing cert already
+# covers the current IP. Never blocks startup either way.
+ExecStartPre=-/bin/bash /home/pi/DronAi/server/deploy/generate-cert.sh
 ExecStart=/bin/bash /home/pi/DronAi/server/deploy/start.sh
 Restart=always
 RestartSec=3
