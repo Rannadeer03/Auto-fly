@@ -8,15 +8,20 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from pydantic import TypeAdapter
+
 from config import settings
 from mavlink.connection import drone_state
 from mavlink.mission_upload import MissionUploadError
+from models.manual_mission import ManualItemInput, to_builder_item
 from models.mission import Mission
 from parser.plan_writer import mission_to_plan_bytes
 from services.grid_planner import GridParams, GridPlanError, generate_grid_mission
-from services.manual_mission_builder import ManualMissionError, ManualWaypoint, build_manual_mission
+from services.manual_mission_builder import ManualMissionError, TakeoffItemData, build_manual_mission
 from services.mission_library_service import mission_library_service
 from services.mission_service import mission_service
+
+_manual_item_adapter: TypeAdapter = TypeAdapter(ManualItemInput)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["mission-library"])
@@ -43,23 +48,16 @@ class SaveLibraryRequest(BaseModel):
     camera_angle_deg: Optional[float] = Field(None, ge=-90, le=0)
 
 
-class ManualLibraryWaypoint(BaseModel):
-    lat: float
-    lon: float
-    altitude_m: float = Field(..., gt=0)
-
-
 class ManualSaveLibraryRequest(BaseModel):
-    """Save the current manual mission (launch/home/path) as a reusable
-    library entry. Mirrors ManualMissionRequest (api/missions.py) — the
-    mission is (re)built server-side, never trusted pre-built from the
-    client."""
+    """Save the current manual mission (home + ordered item list) as a
+    reusable library entry. Mirrors ManualMissionRequest (api/missions.py)
+    — the mission is (re)built server-side, never trusted pre-built from
+    the client."""
 
     name: str = Field(..., min_length=1, max_length=120)
     description: str = Field("", max_length=2000)
-    launch: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
     home: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
-    waypoints: list[ManualLibraryWaypoint] = Field(..., min_length=1, description="in click order")
+    items: list[ManualItemInput] = Field(..., min_length=1, description="in order — never reordered")
     speed_ms: float = Field(default_factory=lambda: settings.DEFAULT_SPEED_MS)
 
 
@@ -99,27 +97,47 @@ def _regenerate(polygon_raw: list, params_raw: dict, name: str) -> tuple[Mission
         raise HTTPException(status_code=400, detail=f"Invalid polygon/params data: {exc}")
 
 
+def _migrate_legacy_manual_record(record: dict) -> dict:
+    """Phase 1 saved manual entries as {launch, home, manual_waypoints} —
+    Phase 2A collapses "launch" into manual_items[0] (a takeoff-type item).
+    Synthesize the new shape in memory for any entry saved under the old
+    one, so it keeps working instead of just breaking on deploy/detail."""
+    if "manual_items" in record or "manual_waypoints" not in record:
+        return record
+    legacy_waypoints = record.get("manual_waypoints") or []
+    launch = record.get("launch") or record.get("home") or [0.0, 0.0]
+    first_altitude = legacy_waypoints[0]["altitude_m"] if legacy_waypoints else settings.DEFAULT_ALTITUDE_M
+    items = [{"type": "takeoff", "lat": launch[0], "lon": launch[1], "altitude_m": first_altitude}]
+    items += [
+        {"type": "waypoint", "lat": w["lat"], "lon": w["lon"], "altitude_m": w["altitude_m"]}
+        for w in legacy_waypoints
+    ]
+    return {**record, "manual_items": items}
+
+
 def _regenerate_manual(
-    launch_raw: list, home_raw: list, waypoints_raw: list, speed_ms: float, name: str
+    home_raw: list, items, speed_ms: float, name: str, *, reanchor_takeoff: bool = False
 ) -> tuple[Mission, None]:
-    """Manual-mission counterpart to _regenerate() — rebuilds fresh from the
-    stored launch/home/waypoints, re-anchoring launch to the drone's current
-    position when connected (same principle as the survey path: redeploying
-    a plan saved while disconnected shouldn't replay a stale takeoff spot).
+    """Manual-mission counterpart to _regenerate() — builds fresh from the
+    given home + ordered item list (already-validated ManualItemInput
+    instances, from either a live request body or a stored record replayed
+    through _manual_item_adapter). When reanchor_takeoff is set (redeploy
+    only), the Takeoff item's position is moved to the drone's current
+    location when connected — same principle as the survey path:
+    redeploying a plan saved while disconnected shouldn't replay a stale
+    takeoff spot. Item order is preserved exactly as given.
     """
     try:
-        launch = (
-            (float(drone_state.latitude), float(drone_state.longitude))
-            if drone_state.connected and (drone_state.latitude or drone_state.longitude)
-            else (float(launch_raw[0]), float(launch_raw[1]))
-        )
         home = (float(home_raw[0]), float(home_raw[1]))
-        waypoints = [
-            ManualWaypoint(latitude=w["lat"], longitude=w["lon"], altitude_m=w["altitude_m"])
-            for w in waypoints_raw
-        ]
+        built_items = [to_builder_item(item) for item in items]
+        if reanchor_takeoff and drone_state.connected and (drone_state.latitude or drone_state.longitude):
+            for item in built_items:
+                if isinstance(item, TakeoffItemData):
+                    item.latitude = float(drone_state.latitude)
+                    item.longitude = float(drone_state.longitude)
+                    break
         safe_name = re.sub(r"[^\w\-]", "_", name.strip())[:120]
-        return build_manual_mission(launch, home, waypoints, speed_ms, mission_name=safe_name)
+        return build_manual_mission(home, built_items, speed_ms, mission_name=safe_name)
     except ManualMissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except (ValueError, TypeError, IndexError, KeyError) as exc:
@@ -153,14 +171,14 @@ async def save_to_library(body: SaveLibraryRequest) -> dict:
 
 @router.post("/mission-library/manual")
 async def save_manual_to_library(body: ManualSaveLibraryRequest) -> dict:
-    """Build a manual mission from the given launch/home/path and save it as
-    a reusable library entry (does not touch the vehicle)."""
-    waypoints_raw = [{"lat": w.lat, "lon": w.lon, "altitude_m": w.altitude_m} for w in body.waypoints]
-    mission, plan_info = _regenerate_manual(body.launch, body.home, waypoints_raw, body.speed_ms, body.name)
+    """Build a manual mission from the given home + ordered item list and
+    save it as a reusable library entry (does not touch the vehicle)."""
+    mission, plan_info = _regenerate_manual(body.home, body.items, body.speed_ms, body.name)
+    items_raw = [item.model_dump() for item in body.items]
     record = mission_library_service.save(
         name=body.name, description=body.description, mission=mission, plan_info=plan_info,
-        mode="manual", launch=tuple(body.launch), home=tuple(body.home),
-        manual_waypoints=waypoints_raw, params={"speed_ms": body.speed_ms},
+        mode="manual", home=tuple(body.home),
+        manual_items=items_raw, params={"speed_ms": body.speed_ms},
     )
     return {"success": True, "message": f"Saved '{record['name']}' to the mission library.", "entry": record}
 
@@ -176,7 +194,7 @@ async def library_detail(entry_id: str) -> dict:
     record = mission_library_service.get_detail(entry_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Library entry '{entry_id}' not found.")
-    return record
+    return _migrate_legacy_manual_record(record)
 
 
 @router.patch("/mission-library/{entry_id}")
@@ -235,13 +253,15 @@ async def deploy_library_entry(entry_id: str) -> dict:
     record = mission_library_service.get(entry_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Library entry '{entry_id}' not found.")
+    record = _migrate_legacy_manual_record(record)
 
     mode = record.get("mode", "survey")
     if mode == "manual":
+        raw_items = [_manual_item_adapter.validate_python(raw) for raw in record["manual_items"]]
         mission, plan_info = _regenerate_manual(
-            record["launch"], record["home"], record["manual_waypoints"],
+            record["home"], raw_items,
             (record.get("params") or {}).get("speed_ms", settings.DEFAULT_SPEED_MS),
-            record["name"],
+            record["name"], reanchor_takeoff=True,
         )
         enrich = False
     else:
@@ -275,7 +295,6 @@ async def deploy_library_entry(entry_id: str) -> dict:
         "mode": mode,
         "polygon": record.get("polygon"),
         "params": record.get("params"),
-        "launch": record.get("launch"),
         "home": record.get("home"),
-        "manual_waypoints": record.get("manual_waypoints"),
+        "manual_items": record.get("manual_items"),
     }

@@ -2,20 +2,20 @@ import { useEffect, useRef } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { generateManualMission } from '@/services/mission-service'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { toManualItemInput } from '@/types/mission-items'
 import { SURVEY_REGENERATE_DEBOUNCE_MS } from '@/constants/api'
 import type { ManualMissionRequest } from '@/types/mission'
 
 /**
  * Manual Mission Mode's counterpart to features/survey/hooks/use-auto-generate-survey.ts
- * — regenerates a preview (upload:false) whenever Launch/Home/waypoints/speed
+ * — regenerates a preview (upload:false) whenever the item list/Home/speed
  * change, debounced so a drag gesture doesn't fire a request per pixel.
- * Requires both Launch and Home placed plus at least one waypoint; until
- * then it just clears any stale preview.
+ * Requires Home placed plus a Launch (takeoff item) and at least one
+ * waypoint; until then it just clears any stale preview.
  */
 export function useGenerateManualMission() {
-  const manualLaunch = useMissionDraftStore((s) => s.manualLaunch)
   const manualHome = useMissionDraftStore((s) => s.manualHome)
-  const manualWaypoints = useMissionDraftStore((s) => s.manualWaypoints)
+  const manualItems = useMissionDraftStore((s) => s.manualItems)
   const speedMs = useMissionDraftStore((s) => s.flightParams.speedMs)
   const missionName = useMissionDraftStore((s) => s.flightParams.missionName)
   const setGenerated = useMissionDraftStore((s) => s.setGenerated)
@@ -27,8 +27,11 @@ export function useGenerateManualMission() {
   })
   const timerRef = useRef<number | null>(null)
 
+  const hasTakeoff = manualItems.some((it) => it.type === 'takeoff')
+  const hasWaypoint = manualItems.some((it) => it.type === 'waypoint')
+
   useEffect(() => {
-    if (!manualLaunch || !manualHome || manualWaypoints.length < 1) {
+    if (!manualHome || !hasTakeoff || !hasWaypoint) {
       setGenerated(null)
       setGenerateError(null)
       setGenerating(false)
@@ -40,9 +43,8 @@ export function useGenerateManualMission() {
 
     timerRef.current = window.setTimeout(() => {
       const body: ManualMissionRequest = {
-        launch: manualLaunch,
         home: manualHome,
-        waypoints: manualWaypoints.map((w) => ({ lat: w.lat, lon: w.lng, altitude_m: w.altitude })),
+        items: manualItems.map(toManualItemInput),
         speed_ms: speedMs,
         upload: false,
         mission_name: missionName || undefined,
@@ -66,7 +68,7 @@ export function useGenerateManualMission() {
     // mutation is stable from useMutation and intentionally excluded — including
     // it would re-run this effect on every mutation state change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manualLaunch, manualHome, manualWaypoints, speedMs, missionName, setGenerated, setGenerating, setGenerateError])
+  }, [manualHome, manualItems, hasTakeoff, hasWaypoint, speedMs, missionName, setGenerated, setGenerating, setGenerateError])
 
   return mutation
 }

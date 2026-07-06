@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { generateManualMission } from '@/services/mission-service'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { toManualItemInput } from '@/types/mission-items'
 import type { ManualMissionRequest } from '@/types/mission'
 
 /** Manual Mission Mode's counterpart to
@@ -13,18 +14,16 @@ export function useUploadManualMission() {
 
   return useMutation({
     mutationFn: () => {
-      const { manualLaunch, manualHome, manualWaypoints, flightParams } =
-        useMissionDraftStore.getState()
-      if (!manualLaunch || !manualHome) {
+      const { manualHome, manualItems, flightParams } = useMissionDraftStore.getState()
+      if (!manualHome || !manualItems.some((it) => it.type === 'takeoff')) {
         throw new Error('Place a Launch and Home marker before uploading.')
       }
-      if (manualWaypoints.length < 1) {
+      if (!manualItems.some((it) => it.type === 'waypoint')) {
         throw new Error('Add at least one waypoint before uploading.')
       }
       const body: ManualMissionRequest = {
-        launch: manualLaunch,
         home: manualHome,
-        waypoints: manualWaypoints.map((w) => ({ lat: w.lat, lon: w.lng, altitude_m: w.altitude })),
+        items: manualItems.map(toManualItemInput),
         speed_ms: flightParams.speedMs,
         upload: true,
         mission_name: flightParams.missionName || undefined,

@@ -1,5 +1,5 @@
 // Mirrors server/services/mission_library_service.py and server/api/mission_library.py
-import type { CaptureMode, GridResponse, Mission, PlanInfo } from '@/types/mission'
+import type { CaptureMode, GridResponse, ManualItemInput, Mission, PlanInfo } from '@/types/mission'
 
 export type LibraryMode = 'survey' | 'manual'
 
@@ -20,12 +20,6 @@ export interface ManualLibraryParams {
 
 export type LibraryParams = SurveyLibraryParams | ManualLibraryParams
 
-export interface ManualLibraryWaypoint {
-  lat: number
-  lon: number
-  altitude_m: number
-}
-
 export interface LibrarySummary {
   id: string
   name: string
@@ -44,9 +38,8 @@ export interface LibraryEntry extends LibrarySummary {
   // Survey-only
   polygon?: [number, number][]
   // Manual-only
-  launch?: [number, number]
   home?: [number, number]
-  manual_waypoints?: ManualLibraryWaypoint[]
+  manual_items?: ManualItemInput[]
   mission: Mission
   plan_info: PlanInfo | null
 }
@@ -74,9 +67,8 @@ export interface SaveToLibraryRequest {
 export interface ManualSaveToLibraryRequest {
   name: string
   description: string
-  launch: [number, number]
   home: [number, number]
-  waypoints: ManualLibraryWaypoint[]
+  items: ManualItemInput[]
   speed_ms: number
 }
 
@@ -90,7 +82,6 @@ export interface DeployLibraryResponse extends GridResponse {
   mode: LibraryMode
   polygon?: [number, number][] | null
   params?: LibraryParams | null
-  launch?: [number, number] | null
   home?: [number, number] | null
-  manual_waypoints?: ManualLibraryWaypoint[] | null
+  manual_items?: ManualItemInput[] | null
 }

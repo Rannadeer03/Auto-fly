@@ -11,9 +11,10 @@ from pydantic import BaseModel, Field
 from config import settings
 from mavlink.connection import drone_state
 from mavlink.mission_upload import MissionUploadError
+from models.manual_mission import ManualItemInput, to_builder_item
 from models.mission import UploadResponse
 from services.grid_planner import GridParams, GridPlanError, generate_grid_mission
-from services.manual_mission_builder import ManualMissionError, ManualWaypoint, build_manual_mission
+from services.manual_mission_builder import ManualMissionError, build_manual_mission
 from services.mission_runner import mission_runner
 from services.mission_service import mission_service
 from services.storage_service import storage_service
@@ -137,21 +138,14 @@ async def generate_mission(body: GridRequest) -> GridResponse:
 
 # ── Manual mission planning ────────────────────────────────────────────────────
 
-class ManualWaypointInput(BaseModel):
-    """One user-placed point (Manual Mission Mode)."""
-
-    lat: float
-    lon: float
-    altitude_m: float = Field(..., gt=0)
-
-
 class ManualMissionRequest(BaseModel):
-    """Manual mission generation request — a hand-placed launch/home/path,
-    as opposed to GridRequest's auto-generated survey."""
+    """Manual mission generation request — an ordered, user-assembled
+    mission-item list (Takeoff/Waypoint/Loiter/RTL/Land/Change Speed), as
+    opposed to GridRequest's auto-generated survey. See
+    models/manual_mission.py for the per-type item shapes."""
 
-    launch: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
     home: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
-    waypoints: list[ManualWaypointInput] = Field(..., min_length=1, description="in click order")
+    items: list[ManualItemInput] = Field(..., min_length=1, description="in order — never reordered")
     speed_ms: float = Field(default_factory=lambda: settings.DEFAULT_SPEED_MS)
     upload: bool = Field(True, description="Upload to the Pixhawk if connected")
     mission_name: Optional[str] = Field(None, max_length=120)
@@ -159,26 +153,22 @@ class ManualMissionRequest(BaseModel):
 
 @router.post("/mission/generate-manual", response_model=GridResponse)
 async def generate_manual_mission(body: ManualMissionRequest) -> GridResponse:
-    """Build a point-to-point mission from a manually-placed launch/home/path
-    and upload it. Waypoint order is preserved exactly as given — never
-    sorted or reversed. No hover/capture enrichment is applied (see
+    """Build a mission from a manually-assembled, ordered mission-item list
+    and upload it. Item order is preserved exactly as given — never sorted
+    or reversed. No hover/capture enrichment is applied (see
     services/mission_service.py's enrich flag) — a manual leg is a
     deliberate straight flight, not a survey gap needing extra photo stops.
     """
     try:
-        launch = (float(body.launch[0]), float(body.launch[1]))
         home = (float(body.home[0]), float(body.home[1]))
-        waypoints = [
-            ManualWaypoint(latitude=w.lat, longitude=w.lon, altitude_m=w.altitude_m)
-            for w in body.waypoints
-        ]
+        items = [to_builder_item(item) for item in body.items]
         safe_name = (
             re.sub(r"[^\w\-]", "_", body.mission_name.strip())[:120]
             if body.mission_name and body.mission_name.strip()
             else None
         )
         mission, plan_info = build_manual_mission(
-            launch, home, waypoints, body.speed_ms, mission_name=safe_name
+            home, items, body.speed_ms, mission_name=safe_name
         )
     except ManualMissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

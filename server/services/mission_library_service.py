@@ -82,9 +82,8 @@ class MissionLibraryService:
         mode: str = "survey",
         polygon: Optional[list[tuple[float, float]]] = None,
         params: Optional[dict] = None,
-        launch: Optional[tuple[float, float]] = None,
         home: Optional[tuple[float, float]] = None,
-        manual_waypoints: Optional[list[dict]] = None,
+        manual_items: Optional[list[dict]] = None,
     ) -> dict:
         """Persist a new library entry.
 
@@ -92,8 +91,11 @@ class MissionLibraryService:
         on any entry saved before this field existed, which callers should
         treat as "survey" (see _summarise). Survey entries carry
         polygon/params (regenerable via grid_planner); manual entries carry
-        launch/home/manual_waypoints (regenerable via manual_mission_builder).
-        Both are optional here so this one method serves either shape
+        home/manual_items — the same ordered, tagged mission-item list
+        server/models/manual_mission.py validates on the request side
+        (regenerable via manual_mission_builder; "launch" is just
+        manual_items[0], a takeoff-type item — no separate field for it).
+        Both shapes are optional here so this one method serves either
         without forcing irrelevant fields on the other.
         """
         with self._lock:
@@ -112,12 +114,10 @@ class MissionLibraryService:
                 record["polygon"] = [list(p) for p in polygon]
             if params is not None:
                 record["params"] = params
-            if launch is not None:
-                record["launch"] = list(launch)
             if home is not None:
                 record["home"] = list(home)
-            if manual_waypoints is not None:
-                record["manual_waypoints"] = manual_waypoints
+            if manual_items is not None:
+                record["manual_items"] = manual_items
             path = settings.MISSION_LIBRARY_DIR / f"{entry_id}.json"
             path.write_text(json.dumps(record, indent=2, default=str))
             logger.info("Mission library entry saved: %s (mode=%s)", entry_id, mode)

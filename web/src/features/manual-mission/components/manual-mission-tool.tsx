@@ -1,19 +1,27 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type maplibregl from 'maplibre-gl'
 import { Rocket, Home, MapPin, Trash2 } from 'lucide-react'
 import { useMapInstance } from '@/features/map/map-context'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { isClickSuppressed } from '@/features/manual-mission/drag-suppression'
 import { cn } from '@/utils/cn'
 
 type ManualTool = 'select' | 'launch' | 'home' | 'waypoint'
 
+// A click landing on an existing marker must still place a new point when a
+// placement tool is active — MapLibre markers sit as DOM siblings of the
+// canvas inside its container, so a click there never reaches the canvas
+// and MapLibre's own synthetic `map.on('click', ...)` event never fires
+// (confirmed empirically: the marker swallows it, which is why "sometimes
+// clicking does not create markers" — it was every time a click landed
+// on/near an existing marker). Listening on the shared canvas container in
+// the capture phase — before any marker's own bubble-phase listener runs —
+// and computing the position with `map.unproject()` sidesteps that
+// entirely; it's a plain native DOM event, not MapLibre's own click.
+const CLICK_MOVE_THRESHOLD_PX = 4
+
 /**
  * Launch / Home / Waypoint placement toolbar for Manual Mission Mode —
  * the point-to-point counterpart to features/map/components/farm-draw-tool.tsx.
- *
- * Unlike terra-draw's shape-drawing modes, this uses a single raw
- * `map.on('click', ...)` listener (heterogeneous marker types with
- * per-marker drag support don't fit terra-draw's point/line/polygon model).
  * Launch/Home are one-shot — placing one returns to `select` immediately.
  * Waypoint stays active for repeated clicks until the user switches tool,
  * since a manual path is normally built from several clicks in a row.
@@ -34,9 +42,25 @@ export function ManualMissionTool() {
 
   useEffect(() => {
     if (!map) return
+    const container = map.getCanvasContainer()
+    let downPos: { x: number; y: number } | null = null
 
-    const onClick = (e: maplibregl.MapMouseEvent) => {
-      const { lng, lat } = e.lngLat
+    const onPointerDown = (e: PointerEvent) => {
+      downPos = { x: e.clientX, y: e.clientY }
+    }
+
+    const onClick = (e: MouseEvent) => {
+      const start = downPos
+      downPos = null
+      if (toolRef.current === 'select') return
+      if (isClickSuppressed()) return // tail end of a marker drag, not a placement click
+      // Tail end of a map-pan drag (mousedown far from mouseup) — a native
+      // listener has no built-in drag-vs-click disambiguation the way
+      // MapLibre's own synthetic click does, so do it manually.
+      if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_MOVE_THRESHOLD_PX) return
+
+      const rect = container.getBoundingClientRect()
+      const { lng, lat } = map.unproject([e.clientX - rect.left, e.clientY - rect.top])
       switch (toolRef.current) {
         case 'launch':
           setManualLaunch([lng, lat])
@@ -47,16 +71,21 @@ export function ManualMissionTool() {
           setTool('select')
           break
         case 'waypoint':
-          addManualWaypoint({ lat, lng, altitude: defaultAltitudeRef.current })
+          addManualWaypoint([lng, lat], defaultAltitudeRef.current)
           break
         default:
           break
       }
     }
 
-    map.on('click', onClick)
+    // Capture phase: runs before a marker's own (bubble-phase) click
+    // listener, and — unlike MapLibre's synthetic click — fires even when
+    // the click target is a marker `<div>` rather than the canvas.
+    container.addEventListener('pointerdown', onPointerDown, true)
+    container.addEventListener('click', onClick, true)
     return () => {
-      map.off('click', onClick)
+      container.removeEventListener('pointerdown', onPointerDown, true)
+      container.removeEventListener('click', onClick, true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map])

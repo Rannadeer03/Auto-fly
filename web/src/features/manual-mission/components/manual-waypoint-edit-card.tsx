@@ -7,30 +7,34 @@ import { useUiStore } from '@/store/ui-store'
 import { formatCoord } from '@/utils/format'
 
 /** Manual Mission Mode's counterpart to features/map/components/waypoint-detail-card.tsx
- * — but editable: altitude can be changed, and the waypoint can be deleted.
- * Position is edited by dragging the marker on the map, not here. */
+ * — but editable: altitude can be changed, and the item can be deleted.
+ * Position is edited by dragging the marker on the map, not here. Only
+ * waypoint-type items are handled here for now — a full per-type property
+ * form for every item type is Phase 2C's "Mission Inspector". */
 export function ManualWaypointEditCard() {
-  const selectedIndex = useUiStore((s) => s.selectedWaypointIndex)
-  const selectWaypoint = useUiStore((s) => s.selectWaypoint)
-  const waypoints = useMissionDraftStore((s) => s.manualWaypoints)
-  const updateManualWaypoint = useMissionDraftStore((s) => s.updateManualWaypoint)
-  const removeManualWaypoint = useMissionDraftStore((s) => s.removeManualWaypoint)
+  const selectedId = useUiStore((s) => s.selectedManualItemId)
+  const selectManualItem = useUiStore((s) => s.selectManualItem)
+  const items = useMissionDraftStore((s) => s.manualItems)
+  const updateManualItem = useMissionDraftStore((s) => s.updateManualItem)
+  const removeManualItem = useMissionDraftStore((s) => s.removeManualItem)
 
-  if (selectedIndex === null) return null
-  const wp = waypoints[selectedIndex]
-  if (!wp) return null
+  if (selectedId === null) return null
+  const item = items.find((it) => it.id === selectedId)
+  if (!item || item.type !== 'waypoint') return null
+
+  const waypointNumber = items.filter((it) => it.type === 'waypoint').indexOf(item) + 1
 
   const remove = () => {
-    removeManualWaypoint(selectedIndex)
-    selectWaypoint(null)
+    removeManualItem(selectedId)
+    selectManualItem(null)
   }
 
   return (
     <Panel className="w-64">
       <PanelHeader>
-        <PanelTitle>Waypoint {selectedIndex + 1}</PanelTitle>
+        <PanelTitle>Waypoint {waypointNumber}</PanelTitle>
         <button
-          onClick={() => selectWaypoint(null)}
+          onClick={() => selectManualItem(null)}
           className="text-text-tertiary hover:text-text-primary"
           aria-label="Close"
         >
@@ -41,11 +45,11 @@ export function ManualWaypointEditCard() {
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div>
             <div className="text-text-tertiary">Latitude</div>
-            <div className="font-mono text-text-primary">{formatCoord(wp.lat)}</div>
+            <div className="font-mono text-text-primary">{formatCoord(item.lat)}</div>
           </div>
           <div>
             <div className="text-text-tertiary">Longitude</div>
-            <div className="font-mono text-text-primary">{formatCoord(wp.lng)}</div>
+            <div className="font-mono text-text-primary">{formatCoord(item.lng)}</div>
           </div>
         </div>
         <p className="text-[11px] text-text-tertiary">Drag the marker on the map to reposition.</p>
@@ -56,9 +60,9 @@ export function ManualWaypointEditCard() {
             min={2}
             max={500}
             step={1}
-            value={wp.altitude}
+            value={item.altitude}
             onChange={(e) =>
-              updateManualWaypoint(selectedIndex, { altitude: Number(e.target.value) || 0 })
+              updateManualItem(selectedId, { altitude: Number(e.target.value) || 0 })
             }
           />
         </div>

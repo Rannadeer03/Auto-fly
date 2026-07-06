@@ -13,6 +13,7 @@ import {
 import { useMissionDraftStore } from '@/store/mission-draft-store'
 import { useUiStore } from '@/store/ui-store'
 import { toBackendPolygon, longestEdgeAngleDeg } from '@/utils/geo'
+import { fromManualItemInput, toManualItemInput } from '@/types/mission-items'
 import type {
   ManualSaveToLibraryRequest,
   SaveToLibraryRequest,
@@ -77,26 +78,24 @@ export function useSaveToLibrary() {
 }
 
 /** Manual Mission Mode's counterpart to useSaveToLibrary — saves the
- * currently placed launch/home/path as a reusable library entry. */
+ * currently assembled home + mission-item list as a reusable library entry. */
 export function useSaveManualToLibrary() {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: (vars: { name: string; description: string }) => {
-      const { manualLaunch, manualHome, manualWaypoints, flightParams } =
-        useMissionDraftStore.getState()
-      if (!manualLaunch || !manualHome) {
+      const { manualHome, manualItems, flightParams } = useMissionDraftStore.getState()
+      if (!manualHome || !manualItems.some((it) => it.type === 'takeoff')) {
         throw new Error('Place a Launch and Home marker before saving to the library.')
       }
-      if (manualWaypoints.length < 1) {
+      if (!manualItems.some((it) => it.type === 'waypoint')) {
         throw new Error('Add at least one waypoint before saving to the library.')
       }
       const body: ManualSaveToLibraryRequest = {
         name: vars.name,
         description: vars.description,
-        launch: manualLaunch,
         home: manualHome,
-        waypoints: manualWaypoints.map((w) => ({ lat: w.lat, lon: w.lng, altitude_m: w.altitude })),
+        items: manualItems.map(toManualItemInput),
         speed_ms: flightParams.speedMs,
       }
       return saveManualToLibrary(body)
@@ -150,14 +149,13 @@ export function useDeleteLibraryEntry() {
  * the mission-draft store and switches to the Mission map so the operator
  * sees exactly what was deployed. Never blocked by verification failing.
  * Branches on the entry's mode so a Manual plan repopulates
- * launch/home/waypoints (and flips missionMode to 'manual') instead of a
- * farm boundary. */
+ * home/manualItems (and flips missionMode to 'manual') instead of a farm
+ * boundary. */
 export function useDeployLibraryEntry() {
   const queryClient = useQueryClient()
   const setFarmPolygon = useMissionDraftStore((s) => s.setFarmPolygon)
-  const setManualLaunch = useMissionDraftStore((s) => s.setManualLaunch)
   const setManualHome = useMissionDraftStore((s) => s.setManualHome)
-  const addManualWaypoint = useMissionDraftStore((s) => s.addManualWaypoint)
+  const setManualItems = useMissionDraftStore((s) => s.setManualItems)
   const clearManualMission = useMissionDraftStore((s) => s.clearManualMission)
   const updateFlightParams = useMissionDraftStore((s) => s.updateFlightParams)
   const setGenerated = useMissionDraftStore((s) => s.setGenerated)
@@ -176,11 +174,8 @@ export function useDeployLibraryEntry() {
         clearManualMission()
         const params = res.params as { speed_ms: number } | null | undefined
         updateFlightParams({ speedMs: params?.speed_ms ?? 5 })
-        if (res.launch) setManualLaunch(res.launch)
         if (res.home) setManualHome(res.home)
-        for (const w of res.manual_waypoints ?? []) {
-          addManualWaypoint({ lat: w.lat, lng: w.lon, altitude: w.altitude_m })
-        }
+        setManualItems((res.manual_items ?? []).map(fromManualItemInput))
       } else {
         setMissionMode('survey')
         const params = res.params as SurveyLibraryParams | null | undefined

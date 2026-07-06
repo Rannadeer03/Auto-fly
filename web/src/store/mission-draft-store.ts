@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { CaptureMode, GridResponse } from '@/types/mission'
+import { createItemId, type MissionItem, type TakeoffItem } from '@/types/mission-items'
 
 // [lng, lat] — GeoJSON / MapLibre / terra-draw convention. Converted to the
 // backend's [lat, lon] convention only at the API boundary (see
@@ -39,12 +40,6 @@ export const DEFAULT_FLIGHT_PARAMS: FlightParams = {
   missionDescription: '',
 }
 
-export interface ManualWaypointDraft {
-  lat: number
-  lng: number
-  altitude: number
-}
-
 interface MissionDraftState {
   farmPolygon: LngLat[] | null
   flightParams: FlightParams
@@ -52,12 +47,13 @@ interface MissionDraftState {
   isGenerating: boolean
   generateError: string | null
 
-  // Manual Mission Mode — an ordered, user-placed path. Launch/Home are each
-  // a single marker (placing a new one replaces the old); waypoints are
-  // append-only via addManualWaypoint (click order is never reordered).
-  manualLaunch: LngLat | null
+  // Manual Mission Mode — an ordered, user-assembled mission-item list
+  // (see types/mission-items.ts). Home is a separate reference point, never
+  // a flown item, matching every mission format in this app's index-0
+  // convention; "Launch" is manualItems[0] once placed — a takeoff-type
+  // item — kept in sync by setManualLaunch, not a separate field.
   manualHome: LngLat | null
-  manualWaypoints: ManualWaypointDraft[]
+  manualItems: MissionItem[]
 
   setFarmPolygon: (polygon: LngLat[] | null) => void
   updateFlightParams: (patch: Partial<FlightParams>) => void
@@ -65,20 +61,23 @@ interface MissionDraftState {
   setGenerated: (result: GridResponse | null) => void
   setGenerating: (isGenerating: boolean) => void
   setGenerateError: (error: string | null) => void
-  setManualLaunch: (position: LngLat | null) => void
   setManualHome: (position: LngLat | null) => void
-  addManualWaypoint: (waypoint: ManualWaypointDraft) => void
-  updateManualWaypoint: (index: number, patch: Partial<ManualWaypointDraft>) => void
-  moveManualWaypoint: (index: number, position: LngLat) => void
-  removeManualWaypoint: (index: number) => void
+  /** Bulk-replaces the whole item list — used to rehydrate a Mission
+   * Library entry on redeploy, where every item (not just one) needs to be
+   * set at once from the server's response. */
+  setManualItems: (items: MissionItem[]) => void
+  setManualLaunch: (position: LngLat) => void
+  addManualWaypoint: (position: LngLat, altitude: number) => void
+  updateManualItem: (id: string, patch: Partial<MissionItem>) => void
+  moveManualItem: (id: string, position: LngLat) => void
+  removeManualItem: (id: string) => void
   clearManualMission: () => void
   reset: () => void
 }
 
 const INITIAL_MANUAL_STATE = {
-  manualLaunch: null as LngLat | null,
   manualHome: null as LngLat | null,
-  manualWaypoints: [] as ManualWaypointDraft[],
+  manualItems: [] as MissionItem[],
 }
 
 export const useMissionDraftStore = create<MissionDraftState>((set) => ({
@@ -97,27 +96,62 @@ export const useMissionDraftStore = create<MissionDraftState>((set) => ({
   setGenerated: (result) => set({ generated: result }),
   setGenerating: (isGenerating) => set({ isGenerating }),
   setGenerateError: (error) => set({ generateError: error }),
-  setManualLaunch: (position) => set({ manualLaunch: position, generated: null }),
   setManualHome: (position) => set({ manualHome: position, generated: null }),
-  addManualWaypoint: (waypoint) =>
-    set((s) => ({ manualWaypoints: [...s.manualWaypoints, waypoint], generated: null })),
-  updateManualWaypoint: (index, patch) =>
+  setManualItems: (items) => set({ manualItems: items, generated: null }),
+
+  // Finds-or-inserts the takeoff item at position 0 rather than keeping a
+  // separate "launch" field — the item list is the single source of truth
+  // for order, per Phase 2A's foundation for a future full item toolbox.
+  setManualLaunch: (position) =>
+    set((s) => {
+      const existing = s.manualItems.find((it): it is TakeoffItem => it.type === 'takeoff')
+      if (existing) {
+        return {
+          manualItems: s.manualItems.map((it) =>
+            it.id === existing.id ? { ...it, lat: position[1], lng: position[0] } : it,
+          ),
+          generated: null,
+        }
+      }
+      const takeoff: TakeoffItem = {
+        id: createItemId(),
+        type: 'takeoff',
+        lat: position[1],
+        lng: position[0],
+        altitude: s.flightParams.altitudeM,
+      }
+      return { manualItems: [takeoff, ...s.manualItems], generated: null }
+    }),
+
+  addManualWaypoint: (position, altitude) =>
     set((s) => ({
-      manualWaypoints: s.manualWaypoints.map((w, i) => (i === index ? { ...w, ...patch } : w)),
+      manualItems: [
+        ...s.manualItems,
+        { id: createItemId(), type: 'waypoint', lat: position[1], lng: position[0], altitude },
+      ],
       generated: null,
     })),
-  moveManualWaypoint: (index, position) =>
+
+  updateManualItem: (id, patch) =>
     set((s) => ({
-      manualWaypoints: s.manualWaypoints.map((w, i) =>
-        i === index ? { ...w, lat: position[1], lng: position[0] } : w,
+      manualItems: s.manualItems.map((it) => (it.id === id ? ({ ...it, ...patch } as MissionItem) : it)),
+      generated: null,
+    })),
+
+  moveManualItem: (id, position) =>
+    set((s) => ({
+      manualItems: s.manualItems.map((it) =>
+        it.id === id && 'lat' in it ? { ...it, lat: position[1], lng: position[0] } : it,
       ),
       generated: null,
     })),
-  removeManualWaypoint: (index) =>
+
+  removeManualItem: (id) =>
     set((s) => ({
-      manualWaypoints: s.manualWaypoints.filter((_, i) => i !== index),
+      manualItems: s.manualItems.filter((it) => it.id !== id),
       generated: null,
     })),
+
   clearManualMission: () => set({ ...INITIAL_MANUAL_STATE, generated: null }),
   reset: () =>
     set({
