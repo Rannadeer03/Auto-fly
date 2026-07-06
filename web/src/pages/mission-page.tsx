@@ -2,6 +2,8 @@ import { MissionMap } from '@/features/map/components/mission-map'
 import { BaseLayerSwitcher } from '@/features/map/components/base-layer-switcher'
 import { FarmDrawTool } from '@/features/map/components/farm-draw-tool'
 import { DroneMarker } from '@/features/map/components/drone-marker'
+import { MyLocationMarker } from '@/features/map/components/my-location-marker'
+import { CenterControls } from '@/features/map/components/center-controls'
 import { MissionAnchors } from '@/features/map/components/mission-anchors'
 import { SurveyLayer } from '@/features/map/components/survey-layer'
 import { WaypointDetailCard } from '@/features/map/components/waypoint-detail-card'
@@ -25,12 +27,16 @@ export function MissionPage() {
   return (
     <MissionMap>
       <DroneMarker />
+      <MyLocationMarker />
       <MissionAnchors />
       <SurveyLayer />
 
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4">
         <div className="pointer-events-auto flex items-start justify-between">
-          <FarmDrawTool />
+          <div className="flex items-start gap-2">
+            <FarmDrawTool />
+            <CenterControls />
+          </div>
           <BaseLayerSwitcher />
         </div>
 

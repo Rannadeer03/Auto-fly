@@ -40,6 +40,13 @@ export interface PortsResponse {
   error?: string
 }
 
+export interface LogEntry {
+  ts: string
+  level: string
+  logger: string
+  msg: string
+}
+
 export interface LogsResponse {
-  logs: string[]
+  logs: LogEntry[]
 }

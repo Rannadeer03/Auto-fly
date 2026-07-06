@@ -13,7 +13,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'DELETE' | 'PUT'
+  method?: 'GET' | 'POST' | 'DELETE' | 'PUT' | 'PATCH'
   body?: unknown
   signal?: AbortSignal
 }
@@ -62,6 +62,10 @@ export async function apiPost<T>(path: string, body?: unknown, signal?: AbortSig
 
 export async function apiDelete<T>(path: string, signal?: AbortSignal): Promise<T> {
   return request<T>(path, { method: 'DELETE', signal })
+}
+
+export async function apiPatch<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, { method: 'PATCH', body, signal })
 }
 
 export async function apiUploadFile<T>(path: string, file: File): Promise<T> {

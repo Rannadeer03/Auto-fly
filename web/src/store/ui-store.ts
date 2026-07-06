@@ -8,6 +8,7 @@ export type SidebarSection =
   | 'telemetry'
   | 'drone-status'
   | 'camera'
+  | 'mission-library'
   | 'mission-files'
   | 'logs'
   | 'settings'

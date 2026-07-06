@@ -3,6 +3,7 @@ import { Panel } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
 import { useUploadMission, useClearMission } from '@/features/mission-execution/hooks/use-upload-mission'
+import { SaveToLibraryButton } from '@/features/mission-library/components/save-to-library-button'
 
 export function UploadMissionBar() {
   const generated = useMissionDraftStore((s) => s.generated)
@@ -13,7 +14,7 @@ export function UploadMissionBar() {
   const canUpload = Boolean(farmPolygon && farmPolygon.length >= 3)
 
   return (
-    <Panel className="flex w-80 items-center justify-between px-3 py-2.5">
+    <Panel className="flex w-96 items-center justify-between px-3 py-2.5">
       <div className="flex items-center gap-2 text-xs">
         {generated?.uploaded_to_drone ? (
           generated.verified ? (
@@ -30,6 +31,7 @@ export function UploadMissionBar() {
         )}
       </div>
       <div className="flex items-center gap-1.5">
+        <SaveToLibraryButton disabled={!canUpload} iconOnly />
         <Button size="sm" variant="ghost" onClick={() => clear.mutate()} disabled={clear.isPending}>
           <Trash2 className="h-3.5 w-3.5" />
         </Button>

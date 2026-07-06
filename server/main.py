@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from api import camera, commands, connect, mission, missions, telemetry
+from api import camera, commands, connect, mission, mission_library, missions, telemetry
 from config import BASE_DIR, settings
 from services.log_service import log_service
 
@@ -161,6 +161,7 @@ app.include_router(telemetry.router)
 app.include_router(commands.router)
 app.include_router(camera.router)
 app.include_router(missions.router)
+app.include_router(mission_library.router)
 
 # ── Core routes ────────────────────────────────────────────────────────────────
 

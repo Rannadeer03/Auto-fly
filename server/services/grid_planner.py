@@ -145,8 +145,25 @@ def generate_grid_mission(
         )
 
     # ── Assemble waypoints ─────────────────────────────────────────────────────
-    first_ll = to_ll(*unrot(lines[0][0]))
     home_ll = home if home is not None else (lat0, lon0)
+
+    # Flatten the serpentine into a single ordered point list (still in the
+    # rotated local frame) before deciding which end to fly first — the sweep
+    # geometry itself (lines, spacing, overlap, coverage) is untouched here.
+    flat_xy: list[tuple[float, float]] = [unrot(pt) for a, b in lines for pt in (a, b)]
+
+    # By construction the sweep above always starts at min_y (the geometric
+    # bottom of the polygon along the sweep axis). Compare the user's
+    # first-drawn vertex against that same axis — not raw XY distance, which
+    # is dominated by the serpentine's alternating left/right endpoint and
+    # would pick the wrong end for e.g. a top-right first click — and start
+    # from whichever end (min_y or max_y) it's nearer to.
+    first_drawn_y = rot(poly_xy[0])[1]
+    if abs(first_drawn_y - max_y) < abs(first_drawn_y - min_y):
+        flat_xy.reverse()
+
+    flat_ll = [to_ll(x, y) for x, y in flat_xy]
+    first_ll = flat_ll[0]
 
     waypoints: list[WaypointItem] = []
 
@@ -168,24 +185,25 @@ def generate_grid_mission(
     # 0: home (AMSL frame, matching parser convention)
     add(_CMD_NAV_WAYPOINT, home_ll[0], home_ll[1], 0.0,
         frame=_FRAME_GLOBAL, current=True)
-    # 1: takeoff at the first survey point
-    add(_CMD_NAV_TAKEOFF, first_ll[0], first_ll[1], params.altitude_m)
+    # 1: takeoff at the actual launch position (current drone GPS fix if
+    # connected, otherwise the planned home) — never at a survey waypoint.
+    add(_CMD_NAV_TAKEOFF, home_ll[0], home_ll[1], params.altitude_m)
     # 2: set ground speed
     add(_CMD_DO_CHANGE_SPEED, 0.0, 0.0, 0.0, p1=1.0, p2=params.speed_ms)
-    # survey lines — each point is a capture waypoint (loiter/hold item
-    # inserted by mission_enrichment.py, not here).
+    # 3+: fly from the launch position to Waypoint 1 (first_ll), then the
+    # rest of the survey sweep in drawing-order-aware direction — each point
+    # is a capture waypoint (loiter/hold item inserted by
+    # services/mission_enrichment.py, not here).
     n_capture_points = 0
-    for a, b in lines:
-        for pt in (a, b):
-            lat, lon = to_ll(*unrot(pt))
-            waypoints.append(WaypointItem(
-                index=len(waypoints), current=False, frame=_FRAME_GLOBAL_REL,
-                command=_CMD_NAV_WAYPOINT, param1=0.0, param2=0.0,
-                param3=0.0, param4=0.0, latitude=lat, longitude=lon,
-                altitude=params.altitude_m, autocontinue=True,
-                is_capture_point=True,
-            ))
-            n_capture_points += 1
+    for lat, lon in flat_ll:
+        waypoints.append(WaypointItem(
+            index=len(waypoints), current=False, frame=_FRAME_GLOBAL_REL,
+            command=_CMD_NAV_WAYPOINT, param1=0.0, param2=0.0,
+            param3=0.0, param4=0.0, latitude=lat, longitude=lon,
+            altitude=params.altitude_m, autocontinue=True,
+            is_capture_point=True,
+        ))
+        n_capture_points += 1
     # final: RTL
     add(_CMD_NAV_RTL, 0.0, 0.0, 0.0)
 
