@@ -14,8 +14,9 @@ import { LiveEstimationPanel } from '@/features/survey/components/live-estimatio
 import { useAutoGenerateSurvey } from '@/features/survey/hooks/use-auto-generate-survey'
 import { ManualMissionTool } from '@/features/manual-mission/components/manual-mission-tool'
 import { ManualMissionLayer } from '@/features/manual-mission/components/manual-mission-layer'
-import { ManualWaypointEditCard } from '@/features/manual-mission/components/manual-waypoint-edit-card'
-import { ManualMissionPanel } from '@/features/manual-mission/components/manual-mission-panel'
+import { MissionInspector } from '@/features/manual-mission/components/mission-inspector'
+import { NonPositionalItemsChips } from '@/features/manual-mission/components/non-positional-items-chips'
+import { MissionSettingsPanel } from '@/features/manual-mission/components/mission-settings-panel'
 import { useGenerateManualMission } from '@/features/manual-mission/hooks/use-generate-manual-mission'
 import { UploadMissionBar } from '@/features/mission-execution/components/upload-mission-bar'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
@@ -45,23 +46,31 @@ export function MissionPage() {
       {isSurvey ? <SurveyLayer /> : <ManualMissionLayer />}
 
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4">
-        <div className="pointer-events-auto flex items-start justify-between">
-          <div className="flex items-start gap-2">
-            <MissionModeToggle />
-            {isSurvey ? <FarmDrawTool /> : <ManualMissionTool />}
-            <CenterControls />
+        <div className="flex flex-col gap-2">
+          <div className="pointer-events-auto flex items-start justify-between">
+            <div className="flex items-start gap-2">
+              <MissionModeToggle />
+              {isSurvey ? <FarmDrawTool /> : <ManualMissionTool />}
+              <CenterControls />
+            </div>
+            <BaseLayerSwitcher />
           </div>
-          <BaseLayerSwitcher />
+
+          {!isSurvey && (
+            <div className="pointer-events-auto flex justify-start">
+              <NonPositionalItemsChips />
+            </div>
+          )}
         </div>
 
         <div className="flex items-end justify-between gap-4">
           <div className="pointer-events-auto">
-            {isSurvey ? <WaypointDetailCard /> : <ManualWaypointEditCard />}
+            {isSurvey ? <WaypointDetailCard /> : <MissionInspector />}
           </div>
           <div className="pointer-events-auto flex items-end gap-4">
             {isSurvey && <FlightParametersPanel />}
             <div className="flex flex-col gap-3">
-              {isSurvey ? <LiveEstimationPanel /> : <ManualMissionPanel />}
+              {isSurvey ? <LiveEstimationPanel /> : <MissionSettingsPanel />}
               <UploadMissionBar />
             </div>
           </div>

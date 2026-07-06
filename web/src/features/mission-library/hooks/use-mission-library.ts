@@ -10,11 +10,12 @@ import {
   saveManualToLibrary,
   saveToLibrary,
 } from '@/services/mission-library-service'
-import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { DEFAULT_FLIGHT_PARAMS, useMissionDraftStore } from '@/store/mission-draft-store'
 import { useUiStore } from '@/store/ui-store'
 import { toBackendPolygon, longestEdgeAngleDeg } from '@/utils/geo'
 import { fromManualItemInput, toManualItemInput } from '@/types/mission-items'
 import type {
+  ManualLibraryParams,
   ManualSaveToLibraryRequest,
   SaveToLibraryRequest,
   SurveyLibraryParams,
@@ -97,6 +98,15 @@ export function useSaveManualToLibrary() {
         home: manualHome,
         items: manualItems.map(toManualItemInput),
         speed_ms: flightParams.speedMs,
+        acceptance_radius_m: flightParams.acceptanceRadiusM,
+        extra_settings: {
+          takeoff_speed_ms: flightParams.takeoffSpeedMs,
+          climb_speed_ms: flightParams.climbSpeedMs,
+          descent_speed_ms: flightParams.descentSpeedMs,
+          rtl_speed_ms: flightParams.rtlSpeedMs,
+          land_speed_ms: flightParams.landSpeedMs,
+          camera_trigger_distance_m: flightParams.cameraTriggerDistanceM,
+        },
       }
       return saveManualToLibrary(body)
     },
@@ -172,8 +182,17 @@ export function useDeployLibraryEntry() {
       if (res.mode === 'manual') {
         setMissionMode('manual')
         clearManualMission()
-        const params = res.params as { speed_ms: number } | null | undefined
-        updateFlightParams({ speedMs: params?.speed_ms ?? 5 })
+        const params = res.params as ManualLibraryParams | null | undefined
+        updateFlightParams({
+          speedMs: params?.speed_ms ?? 5,
+          acceptanceRadiusM: params?.acceptance_radius_m ?? DEFAULT_FLIGHT_PARAMS.acceptanceRadiusM,
+          takeoffSpeedMs: params?.takeoff_speed_ms ?? DEFAULT_FLIGHT_PARAMS.takeoffSpeedMs,
+          climbSpeedMs: params?.climb_speed_ms ?? DEFAULT_FLIGHT_PARAMS.climbSpeedMs,
+          descentSpeedMs: params?.descent_speed_ms ?? DEFAULT_FLIGHT_PARAMS.descentSpeedMs,
+          rtlSpeedMs: params?.rtl_speed_ms ?? DEFAULT_FLIGHT_PARAMS.rtlSpeedMs,
+          landSpeedMs: params?.land_speed_ms ?? DEFAULT_FLIGHT_PARAMS.landSpeedMs,
+          cameraTriggerDistanceM: params?.camera_trigger_distance_m ?? DEFAULT_FLIGHT_PARAMS.cameraTriggerDistanceM,
+        })
         if (res.home) setManualHome(res.home)
         setManualItems((res.manual_items ?? []).map(fromManualItemInput))
       } else {

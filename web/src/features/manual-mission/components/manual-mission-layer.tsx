@@ -47,9 +47,6 @@ function waypointElement(number: number): HTMLDivElement {
   return el
 }
 
-// Loiter/Land aren't placeable from today's UI yet (Phase 2B) — this
-// generic marker keeps the rendering loop below already structured to
-// handle them once they are, without another rewrite.
 function genericItemElement(label: string, color: string): HTMLDivElement {
   const el = document.createElement('div')
   el.style.width = '20px'
@@ -157,12 +154,25 @@ export function ManualMissionLayer() {
 
     for (const item of manualItems) {
       if (item.type === 'takeoff') {
-        const marker = new maplibregl.Marker({ element: pinElement('#34d399', 'LAUNCH'), draggable: true })
+        const el = pinElement('#34d399', 'LAUNCH')
+        const marker = new maplibregl.Marker({ element: el, draggable: true })
         marker.setLngLat([item.lng, item.lat]).addTo(map)
+        let dragged = false
+        marker.on('dragstart', () => {
+          dragged = true
+        })
         marker.on('dragend', () => {
           suppressNextClick()
           const ll = marker.getLngLat()
           moveManualItem(item.id, [ll.lng, ll.lat])
+        })
+        el.addEventListener('click', (e) => {
+          e.stopPropagation()
+          if (dragged) {
+            dragged = false
+            return
+          }
+          selectManualItem(item.id)
         })
         markers.push(marker)
         continue

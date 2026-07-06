@@ -25,6 +25,7 @@ export function useUploadManualMission() {
         home: manualHome,
         items: manualItems.map(toManualItemInput),
         speed_ms: flightParams.speedMs,
+        acceptance_radius_m: flightParams.acceptanceRadiusM,
         upload: true,
         mission_name: flightParams.missionName || undefined,
       }

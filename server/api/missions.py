@@ -147,6 +147,7 @@ class ManualMissionRequest(BaseModel):
     home: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
     items: list[ManualItemInput] = Field(..., min_length=1, description="in order — never reordered")
     speed_ms: float = Field(default_factory=lambda: settings.DEFAULT_SPEED_MS)
+    acceptance_radius_m: Optional[float] = Field(None, ge=0.5, le=50.0)
     upload: bool = Field(True, description="Upload to the Pixhawk if connected")
     mission_name: Optional[str] = Field(None, max_length=120)
 
@@ -168,7 +169,8 @@ async def generate_manual_mission(body: ManualMissionRequest) -> GridResponse:
             else None
         )
         mission, plan_info = build_manual_mission(
-            home, items, body.speed_ms, mission_name=safe_name
+            home, items, body.speed_ms, mission_name=safe_name,
+            acceptance_radius_m=body.acceptance_radius_m,
         )
     except ManualMissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

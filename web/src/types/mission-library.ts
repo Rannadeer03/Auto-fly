@@ -16,6 +16,13 @@ export interface SurveyLibraryParams {
 
 export interface ManualLibraryParams {
   speed_ms: number
+  acceptance_radius_m?: number
+  takeoff_speed_ms?: number
+  climb_speed_ms?: number
+  descent_speed_ms?: number
+  rtl_speed_ms?: number
+  land_speed_ms?: number
+  camera_trigger_distance_m?: number
 }
 
 export type LibraryParams = SurveyLibraryParams | ManualLibraryParams
@@ -70,6 +77,8 @@ export interface ManualSaveToLibraryRequest {
   home: [number, number]
   items: ManualItemInput[]
   speed_ms: number
+  acceptance_radius_m?: number
+  extra_settings?: Record<string, number>
 }
 
 export interface SaveToLibraryResponse {

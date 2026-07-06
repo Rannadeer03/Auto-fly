@@ -105,6 +105,7 @@ export interface ManualMissionRequest {
   home: [number, number]
   items: ManualItemInput[]
   speed_ms: number
+  acceptance_radius_m?: number
   upload: boolean
   mission_name?: string
 }
