@@ -59,6 +59,13 @@ class ManualSaveLibraryRequest(BaseModel):
     home: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
     items: list[ManualItemInput] = Field(..., min_length=1, description="in order — never reordered")
     speed_ms: float = Field(default_factory=lambda: settings.DEFAULT_SPEED_MS)
+    acceptance_radius_m: Optional[float] = Field(None, ge=0.5, le=50.0)
+    # Mission Settings values with no direct MAVLink mission-item mapping
+    # (Takeoff/Climb/Descent/RTL/Land Speed, Camera Trigger Distance — see
+    # manual_mission_builder.py's build_manual_mission docstring). Stored
+    # as opaque metadata purely so they round-trip on save/reload; never
+    # validated or applied server-side.
+    extra_settings: Optional[dict[str, float]] = None
 
 
 class RenameLibraryRequest(BaseModel):
@@ -116,7 +123,8 @@ def _migrate_legacy_manual_record(record: dict) -> dict:
 
 
 def _regenerate_manual(
-    home_raw: list, items, speed_ms: float, name: str, *, reanchor_takeoff: bool = False
+    home_raw: list, items, speed_ms: float, name: str, *,
+    reanchor_takeoff: bool = False, acceptance_radius_m: float | None = None,
 ) -> tuple[Mission, None]:
     """Manual-mission counterpart to _regenerate() — builds fresh from the
     given home + ordered item list (already-validated ManualItemInput
@@ -137,7 +145,10 @@ def _regenerate_manual(
                     item.longitude = float(drone_state.longitude)
                     break
         safe_name = re.sub(r"[^\w\-]", "_", name.strip())[:120]
-        return build_manual_mission(home, built_items, speed_ms, mission_name=safe_name)
+        return build_manual_mission(
+            home, built_items, speed_ms, mission_name=safe_name,
+            acceptance_radius_m=acceptance_radius_m,
+        )
     except ManualMissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except (ValueError, TypeError, IndexError, KeyError) as exc:
@@ -173,12 +184,18 @@ async def save_to_library(body: SaveLibraryRequest) -> dict:
 async def save_manual_to_library(body: ManualSaveLibraryRequest) -> dict:
     """Build a manual mission from the given home + ordered item list and
     save it as a reusable library entry (does not touch the vehicle)."""
-    mission, plan_info = _regenerate_manual(body.home, body.items, body.speed_ms, body.name)
+    mission, plan_info = _regenerate_manual(
+        body.home, body.items, body.speed_ms, body.name,
+        acceptance_radius_m=body.acceptance_radius_m,
+    )
     items_raw = [item.model_dump() for item in body.items]
+    params = {"speed_ms": body.speed_ms, **(body.extra_settings or {})}
+    if body.acceptance_radius_m is not None:
+        params["acceptance_radius_m"] = body.acceptance_radius_m
     record = mission_library_service.save(
         name=body.name, description=body.description, mission=mission, plan_info=plan_info,
         mode="manual", home=tuple(body.home),
-        manual_items=items_raw, params={"speed_ms": body.speed_ms},
+        manual_items=items_raw, params=params,
     )
     return {"success": True, "message": f"Saved '{record['name']}' to the mission library.", "entry": record}
 
@@ -258,10 +275,12 @@ async def deploy_library_entry(entry_id: str) -> dict:
     mode = record.get("mode", "survey")
     if mode == "manual":
         raw_items = [_manual_item_adapter.validate_python(raw) for raw in record["manual_items"]]
+        stored_params = record.get("params") or {}
         mission, plan_info = _regenerate_manual(
             record["home"], raw_items,
-            (record.get("params") or {}).get("speed_ms", settings.DEFAULT_SPEED_MS),
+            stored_params.get("speed_ms", settings.DEFAULT_SPEED_MS),
             record["name"], reanchor_takeoff=True,
+            acceptance_radius_m=stored_params.get("acceptance_radius_m"),
         )
         enrich = False
     else:

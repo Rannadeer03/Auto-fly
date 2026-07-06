@@ -17,6 +17,7 @@ export function useGenerateManualMission() {
   const manualHome = useMissionDraftStore((s) => s.manualHome)
   const manualItems = useMissionDraftStore((s) => s.manualItems)
   const speedMs = useMissionDraftStore((s) => s.flightParams.speedMs)
+  const acceptanceRadiusM = useMissionDraftStore((s) => s.flightParams.acceptanceRadiusM)
   const missionName = useMissionDraftStore((s) => s.flightParams.missionName)
   const setGenerated = useMissionDraftStore((s) => s.setGenerated)
   const setGenerating = useMissionDraftStore((s) => s.setGenerating)
@@ -46,6 +47,7 @@ export function useGenerateManualMission() {
         home: manualHome,
         items: manualItems.map(toManualItemInput),
         speed_ms: speedMs,
+        acceptance_radius_m: acceptanceRadiusM,
         upload: false,
         mission_name: missionName || undefined,
       }
@@ -68,7 +70,7 @@ export function useGenerateManualMission() {
     // mutation is stable from useMutation and intentionally excluded — including
     // it would re-run this effect on every mutation state change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manualHome, manualItems, hasTakeoff, hasWaypoint, speedMs, missionName, setGenerated, setGenerating, setGenerateError])
+  }, [manualHome, manualItems, hasTakeoff, hasWaypoint, speedMs, acceptanceRadiusM, missionName, setGenerated, setGenerating, setGenerateError])
 
   return mutation
 }

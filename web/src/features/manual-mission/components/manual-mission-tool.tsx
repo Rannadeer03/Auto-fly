@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Rocket, Home, MapPin, Trash2 } from 'lucide-react'
+import { PlaneTakeoff, Home, MapPin, Repeat, Undo2, PlaneLanding, Gauge, Trash2 } from 'lucide-react'
 import { useMapInstance } from '@/features/map/map-context'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { useUiStore } from '@/store/ui-store'
 import { isClickSuppressed } from '@/features/manual-mission/drag-suppression'
 import { cn } from '@/utils/cn'
 
-type ManualTool = 'select' | 'launch' | 'home' | 'waypoint'
+// The four positional tools wait for a map click before placing anything;
+// 'rtl' and 'change_speed' have no map location (see mission-items.ts's
+// hasPosition) so their buttons place the item immediately on click — the
+// toolbar never actually enters those two as a "waiting for map click" mode.
+type ManualTool = 'select' | 'home' | 'takeoff' | 'waypoint' | 'loiter' | 'land'
 
 // A click landing on an existing marker must still place a new point when a
 // placement tool is active — MapLibre markers sit as DOM siblings of the
@@ -20,11 +25,12 @@ type ManualTool = 'select' | 'launch' | 'home' | 'waypoint'
 const CLICK_MOVE_THRESHOLD_PX = 4
 
 /**
- * Launch / Home / Waypoint placement toolbar for Manual Mission Mode —
- * the point-to-point counterpart to features/map/components/farm-draw-tool.tsx.
- * Launch/Home are one-shot — placing one returns to `select` immediately.
- * Waypoint stays active for repeated clicks until the user switches tool,
- * since a manual path is normally built from several clicks in a row.
+ * Mission Toolbox for Manual Mission Mode — the point-to-point counterpart
+ * to features/map/components/farm-draw-tool.tsx. Takeoff/Home are one-shot
+ * (placing one returns to `select` immediately); Waypoint/Loiter/Land stay
+ * active for repeated clicks until the user switches tool. RTL and Change
+ * Speed have no map position, so their buttons append the item immediately
+ * and select it — there is no "waiting for a click" state for them.
  */
 export function ManualMissionTool() {
   const map = useMapInstance()
@@ -32,13 +38,10 @@ export function ManualMissionTool() {
   const toolRef = useRef(tool)
   toolRef.current = tool
 
-  const setManualLaunch = useMissionDraftStore((s) => s.setManualLaunch)
   const setManualHome = useMissionDraftStore((s) => s.setManualHome)
-  const addManualWaypoint = useMissionDraftStore((s) => s.addManualWaypoint)
+  const addManualItem = useMissionDraftStore((s) => s.addManualItem)
   const clearManualMission = useMissionDraftStore((s) => s.clearManualMission)
-  const defaultAltitude = useMissionDraftStore((s) => s.flightParams.altitudeM)
-  const defaultAltitudeRef = useRef(defaultAltitude)
-  defaultAltitudeRef.current = defaultAltitude
+  const selectManualItem = useUiStore((s) => s.selectManualItem)
 
   useEffect(() => {
     if (!map) return
@@ -62,16 +65,22 @@ export function ManualMissionTool() {
       const rect = container.getBoundingClientRect()
       const { lng, lat } = map.unproject([e.clientX - rect.left, e.clientY - rect.top])
       switch (toolRef.current) {
-        case 'launch':
-          setManualLaunch([lng, lat])
-          setTool('select')
-          break
         case 'home':
           setManualHome([lng, lat])
           setTool('select')
           break
+        case 'takeoff':
+          addManualItem('takeoff', [lng, lat])
+          setTool('select')
+          break
         case 'waypoint':
-          addManualWaypoint([lng, lat], defaultAltitudeRef.current)
+          addManualItem('waypoint', [lng, lat])
+          break
+        case 'loiter':
+          addManualItem('loiter', [lng, lat])
+          break
+        case 'land':
+          addManualItem('land', [lng, lat])
           break
         default:
           break
@@ -103,25 +112,58 @@ export function ManualMissionTool() {
     setTool('select')
   }
 
+  const toggle = (t: ManualTool) => setTool((cur) => (cur === t ? 'select' : t))
+
+  // No map position — append immediately and open the Inspector on it,
+  // since there's no marker to click afterward (no Timeline yet either).
+  const appendInstantly = (type: 'rtl' | 'change_speed') => {
+    const id = addManualItem(type)
+    selectManualItem(id)
+    setTool('select')
+  }
+
   return (
     <div className="glass-panel flex items-center gap-0.5 rounded-[var(--radius-control)] p-1">
       <ToolButton
-        active={tool === 'launch'}
-        onClick={() => setTool(tool === 'launch' ? 'select' : 'launch')}
-        label="Place Launch marker"
-        icon={<Rocket className="h-4 w-4" />}
-      />
-      <ToolButton
         active={tool === 'home'}
-        onClick={() => setTool(tool === 'home' ? 'select' : 'home')}
+        onClick={() => toggle('home')}
         label="Place Home marker"
         icon={<Home className="h-4 w-4" />}
       />
+      <div className="mx-0.5 h-5 w-px bg-border" />
+      <ToolButton
+        active={tool === 'takeoff'}
+        onClick={() => toggle('takeoff')}
+        label="Place Takeoff"
+        icon={<PlaneTakeoff className="h-4 w-4" />}
+      />
       <ToolButton
         active={tool === 'waypoint'}
-        onClick={() => setTool(tool === 'waypoint' ? 'select' : 'waypoint')}
-        label="Add waypoints (click the map repeatedly)"
+        onClick={() => toggle('waypoint')}
+        label="Add Waypoints (click the map repeatedly)"
         icon={<MapPin className="h-4 w-4" />}
+      />
+      <ToolButton
+        active={tool === 'loiter'}
+        onClick={() => toggle('loiter')}
+        label="Add Loiter"
+        icon={<Repeat className="h-4 w-4" />}
+      />
+      <ToolButton
+        active={tool === 'land'}
+        onClick={() => toggle('land')}
+        label="Add Land"
+        icon={<PlaneLanding className="h-4 w-4" />}
+      />
+      <ToolButton
+        onClick={() => appendInstantly('change_speed')}
+        label="Add Change Speed"
+        icon={<Gauge className="h-4 w-4" />}
+      />
+      <ToolButton
+        onClick={() => appendInstantly('rtl')}
+        label="Add RTL (Return to Launch)"
+        icon={<Undo2 className="h-4 w-4" />}
       />
       <div className="mx-0.5 h-5 w-px bg-border" />
       <ToolButton onClick={clear} label="Clear manual mission" icon={<Trash2 className="h-4 w-4" />} />

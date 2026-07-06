@@ -84,13 +84,15 @@ ManualItemData = Union[
 _POSITIONAL_TYPES = (TakeoffItemData, WaypointItemData, LoiterItemData, LandItemData)
 
 
-def _validate(items: list[ManualItemData], speed_ms: float) -> None:
+def _validate(items: list[ManualItemData], speed_ms: float, acceptance_radius_m: float | None) -> None:
     if not any(isinstance(it, _POSITIONAL_TYPES) for it in items):
         raise ManualMissionError("A manual mission needs at least one Takeoff or Waypoint item.")
     if len(items) > _MAX_MANUAL_ITEMS:
         raise ManualMissionError(f"{len(items)} items exceeds the limit ({_MAX_MANUAL_ITEMS}).")
     if not 0.5 <= speed_ms <= 25.0:
         raise ManualMissionError("Speed must be between 0.5 and 25 m/s.")
+    if acceptance_radius_m is not None and not 0.5 <= acceptance_radius_m <= 50.0:
+        raise ManualMissionError("Acceptance radius must be between 0.5 and 50 m.")
     for it in items:
         if isinstance(it, (TakeoffItemData, WaypointItemData, LoiterItemData)):
             if not 2.0 <= it.altitude_m <= 500.0:
@@ -106,6 +108,7 @@ def build_manual_mission(
     items: list[ManualItemData],
     speed_ms: float,
     mission_name: str | None = None,
+    acceptance_radius_m: float | None = None,
 ) -> tuple[Mission, None]:
     """Build a Mission from a manually-assembled, ordered mission-item list.
 
@@ -118,10 +121,18 @@ def build_manual_mission(
     Takeoff (today's UI only offers one global speed value, applied at that
     fixed position) and a final NAV_RTL is auto-appended unless the caller
     already included one — both become ordinary user-placed items once the
-    map UI supports inserting them anywhere (Phase 2B), with no change
-    needed here.
+    map UI supports inserting them anywhere.
+
+    acceptance_radius_m (Mission Settings' "Acceptance Radius", falls back
+    to config.WAYPOINT_RADIUS_M) is written into MAV_CMD_NAV_WAYPOINT/
+    LOITER_TIME/LAND's param2 — the real MAVLink "how close counts as
+    reached" radius — for every positioned item. This is the one Mission
+    Settings value with a direct MAVLink mission-item representation;
+    Takeoff/Climb/Descent/RTL/Land Speed are vehicle parameters, not mission
+    items, so they aren't applied here (see models/manual_mission.py).
     """
-    _validate(items, speed_ms)
+    _validate(items, speed_ms, acceptance_radius_m)
+    radius = acceptance_radius_m if acceptance_radius_m is not None else settings.WAYPOINT_RADIUS_M
 
     built: list[WaypointItem] = []
 
@@ -148,11 +159,11 @@ def build_manual_mission(
                 add(_CMD_DO_CHANGE_SPEED, 0.0, 0.0, 0.0, p1=1.0, p2=speed_ms)
                 speed_inserted = True
         elif isinstance(item, WaypointItemData):
-            add(_CMD_NAV_WAYPOINT, item.latitude, item.longitude, item.altitude_m)
+            add(_CMD_NAV_WAYPOINT, item.latitude, item.longitude, item.altitude_m, p2=radius)
         elif isinstance(item, LoiterItemData):
-            add(_CMD_NAV_LOITER_TIME, item.latitude, item.longitude, item.altitude_m, p1=item.hold_time_s)
+            add(_CMD_NAV_LOITER_TIME, item.latitude, item.longitude, item.altitude_m, p1=item.hold_time_s, p2=radius)
         elif isinstance(item, LandItemData):
-            add(_CMD_NAV_LAND, item.latitude, item.longitude, 0.0)
+            add(_CMD_NAV_LAND, item.latitude, item.longitude, 0.0, p2=radius)
         elif isinstance(item, ChangeSpeedItemData):
             add(_CMD_DO_CHANGE_SPEED, 0.0, 0.0, 0.0, p1=1.0, p2=item.speed_ms)
         elif isinstance(item, RtlItemData):
