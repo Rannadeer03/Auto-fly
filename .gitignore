@@ -18,6 +18,11 @@ server/uploads/missions/*
 server/mission_library/*
 !server/mission_library/.gitkeep
 
+# Self-signed HTTPS cert/key (deploy/generate-cert.sh) — machine-specific,
+# regenerated automatically on every boot; the private key must never be
+# committed.
+server/deploy/certs/
+
 # IDE / local settings
 .claude/
 .idea/

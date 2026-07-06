@@ -182,6 +182,20 @@ class Settings:
     HOST: str = os.environ.get("HOST", "0.0.0.0")
     PORT: int = int(os.environ.get("PORT", "8000"))
 
+    # ── HTTPS (self-signed) ─────────────────────────────────────────────────────
+    # Browsers only expose the Geolocation API in a "secure context" — HTTPS,
+    # or http://localhost — so a plain-HTTP LAN address like http://<pi-ip>:8000
+    # (the normal way this app is reached from a laptop) silently blocks "My
+    # Location" with no prompt at all. deploy/generate-cert.sh creates a
+    # self-signed cert/key here (regenerated automatically if the Pi's LAN IP
+    # changes); deploy/start.sh serves HTTPS on the same port whenever both
+    # files are present, and falls back to plain HTTP otherwise (e.g. local
+    # dev, where a self-signed cert buys nothing since localhost is already a
+    # secure context).
+    SSL_DIR: Path = BASE_DIR / "deploy" / "certs"
+    SSL_CERTFILE: Path = SSL_DIR / "dronai.crt"
+    SSL_KEYFILE: Path = SSL_DIR / "dronai.key"
+
     # ── Mission estimation constants ───────────────────────────────────────────
     DEFAULT_CRUISE_SPEED_MS: float = 5.0
     DEFAULT_BATTERY_CAPACITY_MAH: float = 16000.0
