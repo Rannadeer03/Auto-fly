@@ -39,6 +39,12 @@ export const DEFAULT_FLIGHT_PARAMS: FlightParams = {
   missionDescription: '',
 }
 
+export interface ManualWaypointDraft {
+  lat: number
+  lng: number
+  altitude: number
+}
+
 interface MissionDraftState {
   farmPolygon: LngLat[] | null
   flightParams: FlightParams
@@ -46,13 +52,33 @@ interface MissionDraftState {
   isGenerating: boolean
   generateError: string | null
 
+  // Manual Mission Mode — an ordered, user-placed path. Launch/Home are each
+  // a single marker (placing a new one replaces the old); waypoints are
+  // append-only via addManualWaypoint (click order is never reordered).
+  manualLaunch: LngLat | null
+  manualHome: LngLat | null
+  manualWaypoints: ManualWaypointDraft[]
+
   setFarmPolygon: (polygon: LngLat[] | null) => void
   updateFlightParams: (patch: Partial<FlightParams>) => void
   applyServerDefaults: (defaults: Partial<FlightParams>) => void
   setGenerated: (result: GridResponse | null) => void
   setGenerating: (isGenerating: boolean) => void
   setGenerateError: (error: string | null) => void
+  setManualLaunch: (position: LngLat | null) => void
+  setManualHome: (position: LngLat | null) => void
+  addManualWaypoint: (waypoint: ManualWaypointDraft) => void
+  updateManualWaypoint: (index: number, patch: Partial<ManualWaypointDraft>) => void
+  moveManualWaypoint: (index: number, position: LngLat) => void
+  removeManualWaypoint: (index: number) => void
+  clearManualMission: () => void
   reset: () => void
+}
+
+const INITIAL_MANUAL_STATE = {
+  manualLaunch: null as LngLat | null,
+  manualHome: null as LngLat | null,
+  manualWaypoints: [] as ManualWaypointDraft[],
 }
 
 export const useMissionDraftStore = create<MissionDraftState>((set) => ({
@@ -61,6 +87,7 @@ export const useMissionDraftStore = create<MissionDraftState>((set) => ({
   generated: null,
   isGenerating: false,
   generateError: null,
+  ...INITIAL_MANUAL_STATE,
 
   setFarmPolygon: (polygon) => set({ farmPolygon: polygon, generated: null }),
   updateFlightParams: (patch) =>
@@ -70,6 +97,28 @@ export const useMissionDraftStore = create<MissionDraftState>((set) => ({
   setGenerated: (result) => set({ generated: result }),
   setGenerating: (isGenerating) => set({ isGenerating }),
   setGenerateError: (error) => set({ generateError: error }),
+  setManualLaunch: (position) => set({ manualLaunch: position, generated: null }),
+  setManualHome: (position) => set({ manualHome: position, generated: null }),
+  addManualWaypoint: (waypoint) =>
+    set((s) => ({ manualWaypoints: [...s.manualWaypoints, waypoint], generated: null })),
+  updateManualWaypoint: (index, patch) =>
+    set((s) => ({
+      manualWaypoints: s.manualWaypoints.map((w, i) => (i === index ? { ...w, ...patch } : w)),
+      generated: null,
+    })),
+  moveManualWaypoint: (index, position) =>
+    set((s) => ({
+      manualWaypoints: s.manualWaypoints.map((w, i) =>
+        i === index ? { ...w, lat: position[1], lng: position[0] } : w,
+      ),
+      generated: null,
+    })),
+  removeManualWaypoint: (index) =>
+    set((s) => ({
+      manualWaypoints: s.manualWaypoints.filter((_, i) => i !== index),
+      generated: null,
+    })),
+  clearManualMission: () => set({ ...INITIAL_MANUAL_STATE, generated: null }),
   reset: () =>
     set({
       farmPolygon: null,
@@ -77,5 +126,6 @@ export const useMissionDraftStore = create<MissionDraftState>((set) => ({
       generated: null,
       isGenerating: false,
       generateError: null,
+      ...INITIAL_MANUAL_STATE,
     }),
 }))

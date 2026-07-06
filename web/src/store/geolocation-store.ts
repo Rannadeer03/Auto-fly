@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 
-export type GeolocationStatus = 'idle' | 'requesting' | 'granted' | 'denied' | 'unsupported' | 'error'
+export type GeolocationStatus =
+  | 'idle'
+  | 'requesting'
+  | 'granted'
+  | 'denied'
+  | 'unsupported'
+  | 'insecure-context'
+  | 'error'
 
 export interface MyLocationFix {
   lat: number

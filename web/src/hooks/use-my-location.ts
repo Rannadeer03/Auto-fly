@@ -14,6 +14,16 @@ export function useMyLocation(): void {
   const setError = useGeolocationStore((s) => s.setError)
 
   useEffect(() => {
+    // The Geolocation API is only available in a "secure context" — HTTPS,
+    // or http://localhost. Opening this app at a plain-HTTP LAN address
+    // (e.g. http://<pi-ip>:8000, which is how it's normally reached from a
+    // laptop on the same network) makes every browser refuse geolocation
+    // outright, with no prompt at all — surface that distinctly so it
+    // doesn't just look like a silent failure.
+    if (!window.isSecureContext) {
+      setStatus('insecure-context')
+      return
+    }
     if (!('geolocation' in navigator)) {
       setStatus('unsupported')
       return

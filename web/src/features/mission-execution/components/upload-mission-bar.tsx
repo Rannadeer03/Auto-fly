@@ -2,16 +2,29 @@ import { UploadCloud, Trash2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { Panel } from '@/components/ui/panel'
 import { Button } from '@/components/ui/button'
 import { useMissionDraftStore } from '@/store/mission-draft-store'
+import { useUiStore } from '@/store/ui-store'
 import { useUploadMission, useClearMission } from '@/features/mission-execution/hooks/use-upload-mission'
+import { useUploadManualMission } from '@/features/manual-mission/hooks/use-upload-manual-mission'
 import { SaveToLibraryButton } from '@/features/mission-library/components/save-to-library-button'
 
 export function UploadMissionBar() {
+  const missionMode = useUiStore((s) => s.missionMode)
   const generated = useMissionDraftStore((s) => s.generated)
   const farmPolygon = useMissionDraftStore((s) => s.farmPolygon)
-  const upload = useUploadMission()
+  const manualLaunch = useMissionDraftStore((s) => s.manualLaunch)
+  const manualHome = useMissionDraftStore((s) => s.manualHome)
+  const manualWaypoints = useMissionDraftStore((s) => s.manualWaypoints)
+  // Both hooks are always called (rules of hooks) — only one is ever
+  // actually invoked, based on missionMode, below.
+  const uploadSurvey = useUploadMission()
+  const uploadManual = useUploadManualMission()
   const clear = useClearMission()
 
-  const canUpload = Boolean(farmPolygon && farmPolygon.length >= 3)
+  const isSurvey = missionMode === 'survey'
+  const upload = isSurvey ? uploadSurvey : uploadManual
+  const canUpload = isSurvey
+    ? Boolean(farmPolygon && farmPolygon.length >= 3)
+    : Boolean(manualLaunch && manualHome && manualWaypoints.length >= 1)
 
   return (
     <Panel className="flex w-96 items-center justify-between px-3 py-2.5">

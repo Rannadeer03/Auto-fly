@@ -18,7 +18,7 @@ export interface WaypointItem {
 
 export interface Mission {
   filename: string
-  source_format: 'waypoints' | 'plan' | 'grid'
+  source_format: 'waypoints' | 'plan' | 'grid' | 'manual'
   waypoint_count: number
   nav_waypoints: number
   total_distance_m: number
@@ -87,6 +87,21 @@ export interface GridRequest {
   hold_time_s?: number
   mission_name?: string
   camera_angle_deg?: number
+}
+
+export interface ManualWaypointInput {
+  lat: number
+  lon: number
+  altitude_m: number
+}
+
+export interface ManualMissionRequest {
+  launch: [number, number]
+  home: [number, number]
+  waypoints: ManualWaypointInput[]
+  speed_ms: number
+  upload: boolean
+  mission_name?: string
 }
 
 export interface PlanningConfig {

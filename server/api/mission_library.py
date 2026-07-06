@@ -14,6 +14,7 @@ from mavlink.mission_upload import MissionUploadError
 from models.mission import Mission
 from parser.plan_writer import mission_to_plan_bytes
 from services.grid_planner import GridParams, GridPlanError, generate_grid_mission
+from services.manual_mission_builder import ManualMissionError, ManualWaypoint, build_manual_mission
 from services.mission_library_service import mission_library_service
 from services.mission_service import mission_service
 
@@ -40,6 +41,26 @@ class SaveLibraryRequest(BaseModel):
     capture_mode: Optional[str] = Field(None, pattern="^(hover|continuous)$")
     hold_time_s: Optional[float] = Field(None, ge=0, le=30)
     camera_angle_deg: Optional[float] = Field(None, ge=-90, le=0)
+
+
+class ManualLibraryWaypoint(BaseModel):
+    lat: float
+    lon: float
+    altitude_m: float = Field(..., gt=0)
+
+
+class ManualSaveLibraryRequest(BaseModel):
+    """Save the current manual mission (launch/home/path) as a reusable
+    library entry. Mirrors ManualMissionRequest (api/missions.py) — the
+    mission is (re)built server-side, never trusted pre-built from the
+    client."""
+
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = Field("", max_length=2000)
+    launch: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
+    home: list[float] = Field(..., min_length=2, max_length=2, description="[lat, lon]")
+    waypoints: list[ManualLibraryWaypoint] = Field(..., min_length=1, description="in click order")
+    speed_ms: float = Field(default_factory=lambda: settings.DEFAULT_SPEED_MS)
 
 
 class RenameLibraryRequest(BaseModel):
@@ -78,6 +99,33 @@ def _regenerate(polygon_raw: list, params_raw: dict, name: str) -> tuple[Mission
         raise HTTPException(status_code=400, detail=f"Invalid polygon/params data: {exc}")
 
 
+def _regenerate_manual(
+    launch_raw: list, home_raw: list, waypoints_raw: list, speed_ms: float, name: str
+) -> tuple[Mission, None]:
+    """Manual-mission counterpart to _regenerate() — rebuilds fresh from the
+    stored launch/home/waypoints, re-anchoring launch to the drone's current
+    position when connected (same principle as the survey path: redeploying
+    a plan saved while disconnected shouldn't replay a stale takeoff spot).
+    """
+    try:
+        launch = (
+            (float(drone_state.latitude), float(drone_state.longitude))
+            if drone_state.connected and (drone_state.latitude or drone_state.longitude)
+            else (float(launch_raw[0]), float(launch_raw[1]))
+        )
+        home = (float(home_raw[0]), float(home_raw[1]))
+        waypoints = [
+            ManualWaypoint(latitude=w["lat"], longitude=w["lon"], altitude_m=w["altitude_m"])
+            for w in waypoints_raw
+        ]
+        safe_name = re.sub(r"[^\w\-]", "_", name.strip())[:120]
+        return build_manual_mission(launch, home, waypoints, speed_ms, mission_name=safe_name)
+    except ManualMissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ValueError, TypeError, IndexError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid manual mission data: {exc}")
+
+
 @router.post("/mission-library")
 async def save_to_library(body: SaveLibraryRequest) -> dict:
     """Generate a survey from the given polygon/params and save it as a
@@ -97,8 +145,22 @@ async def save_to_library(body: SaveLibraryRequest) -> dict:
         "camera_angle_deg": body.camera_angle_deg if body.camera_angle_deg is not None else settings.CAMERA_PITCH_DEG,
     }
     record = mission_library_service.save(
-        name=body.name, description=body.description, polygon=body.polygon,
-        params=params, mission=mission, plan_info=plan_info,
+        name=body.name, description=body.description, mission=mission, plan_info=plan_info,
+        mode="survey", polygon=body.polygon, params=params,
+    )
+    return {"success": True, "message": f"Saved '{record['name']}' to the mission library.", "entry": record}
+
+
+@router.post("/mission-library/manual")
+async def save_manual_to_library(body: ManualSaveLibraryRequest) -> dict:
+    """Build a manual mission from the given launch/home/path and save it as
+    a reusable library entry (does not touch the vehicle)."""
+    waypoints_raw = [{"lat": w.lat, "lon": w.lon, "altitude_m": w.altitude_m} for w in body.waypoints]
+    mission, plan_info = _regenerate_manual(body.launch, body.home, waypoints_raw, body.speed_ms, body.name)
+    record = mission_library_service.save(
+        name=body.name, description=body.description, mission=mission, plan_info=plan_info,
+        mode="manual", launch=tuple(body.launch), home=tuple(body.home),
+        manual_waypoints=waypoints_raw, params={"speed_ms": body.speed_ms},
     )
     return {"success": True, "message": f"Saved '{record['name']}' to the mission library.", "entry": record}
 
@@ -173,9 +235,21 @@ async def deploy_library_entry(entry_id: str) -> dict:
     record = mission_library_service.get(entry_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Library entry '{entry_id}' not found.")
-    mission, plan_info = _regenerate(record["polygon"], record["params"], record["name"])
+
+    mode = record.get("mode", "survey")
+    if mode == "manual":
+        mission, plan_info = _regenerate_manual(
+            record["launch"], record["home"], record["manual_waypoints"],
+            (record.get("params") or {}).get("speed_ms", settings.DEFAULT_SPEED_MS),
+            record["name"],
+        )
+        enrich = False
+    else:
+        mission, plan_info = _regenerate(record["polygon"], record["params"], record["name"])
+        enrich = True
+
     try:
-        result = mission_service.load_generated(mission)
+        result = mission_service.load_generated(mission, enrich=enrich)
     except MissionUploadError as exc:
         logger.error("Mission library deploy failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"MAVLink upload error: {exc}")
@@ -198,6 +272,10 @@ async def deploy_library_entry(entry_id: str) -> dict:
         "verified": verified,
         "verification_message": verify_msg,
         "plan_info": plan_info,
+        "mode": mode,
         "polygon": record.get("polygon"),
         "params": record.get("params"),
+        "launch": record.get("launch"),
+        "home": record.get("home"),
+        "manual_waypoints": record.get("manual_waypoints"),
     }

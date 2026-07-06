@@ -107,16 +107,23 @@ class MissionService:
             "verification_message": verification_message,
         }
 
-    def store_mission(self, mission: Mission) -> None:
-        """Hold a Mission locally without uploading it to the vehicle."""
-        self._current_mission = enrich_mission(mission)
+    def store_mission(self, mission: Mission, *, enrich: bool = True) -> None:
+        """Hold a Mission locally without uploading it to the vehicle.
 
-    def load_generated(self, mission: Mission) -> dict:
+        enrich=False skips densification/loiter-insertion — used for manual
+        missions, where a long user-placed leg is deliberate (fly straight
+        through), not a survey gap that needs extra capture stops.
+        """
+        self._current_mission = enrich_mission(mission) if enrich else mission
+
+    def load_generated(self, mission: Mission, *, enrich: bool = True) -> dict:
         """Adopt an in-memory Mission (e.g. survey grid) and upload if connected.
 
         Mirrors process_upload() but skips file parsing/saving of raw bytes.
+        See store_mission() for what enrich=False changes.
         """
-        mission = enrich_mission(mission)
+        if enrich:
+            mission = enrich_mission(mission)
         self._current_mission = mission
         uploaded = False
         verified = False
