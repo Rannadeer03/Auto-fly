@@ -2,8 +2,10 @@ import { useEffect, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 import type { Feature, FeatureCollection, LineString } from 'geojson'
 import { useMapInstance } from '@/features/map/map-context'
-import { useMissionDraftStore, type LngLat } from '@/store/mission-draft-store'
+import { useMissionDraftStore } from '@/store/mission-draft-store'
 import { useUiStore } from '@/store/ui-store'
+import { suppressNextClick } from '@/features/manual-mission/drag-suppression'
+import { hasPosition, type MissionItem } from '@/types/mission-items'
 
 const LINE_SOURCE = 'manual-mission-path'
 const LINE_LAYER = 'manual-mission-path-line'
@@ -45,12 +47,35 @@ function waypointElement(number: number): HTMLDivElement {
   return el
 }
 
+// Loiter/Land aren't placeable from today's UI yet (Phase 2B) — this
+// generic marker keeps the rendering loop below already structured to
+// handle them once they are, without another rewrite.
+function genericItemElement(label: string, color: string): HTMLDivElement {
+  const el = document.createElement('div')
+  el.style.width = '20px'
+  el.style.height = '20px'
+  el.style.borderRadius = '4px'
+  el.style.display = 'flex'
+  el.style.alignItems = 'center'
+  el.style.justifyContent = 'center'
+  el.style.background = color
+  el.style.color = '#090b10'
+  el.style.fontSize = '10px'
+  el.style.fontWeight = '700'
+  el.style.border = '1.5px solid #090b10'
+  el.style.boxShadow = '0 2px 6px rgba(0,0,0,0.5)'
+  el.style.cursor = 'grab'
+  el.textContent = label
+  return el
+}
+
 /**
- * Renders Manual Mission Mode's interactive state: draggable Launch/Home
- * markers, one draggable numbered marker per waypoint, and a connecting
- * line from Launch through the waypoints in order (not through Home — RTL
- * returns to the vehicle's actual arm position automatically, there is no
- * drawn "last leg back to Home").
+ * Renders Manual Mission Mode's interactive state: a draggable Launch
+ * marker (the takeoff-type item in `manualItems`), a draggable Home
+ * marker (its own field — never a flown item), one draggable marker per
+ * remaining positional item, and a connecting line from Launch through
+ * them in order (not through Home — RTL returns to the vehicle's actual
+ * arm position automatically, there is no drawn "last leg back to Home").
  *
  * Deliberately not built on SurveyLayer's GPU circle layer: manual mode
  * needs native drag-and-drop per point, which MapLibre only supports on
@@ -59,17 +84,14 @@ function waypointElement(number: number): HTMLDivElement {
  */
 export function ManualMissionLayer() {
   const map = useMapInstance()
-  const manualLaunch = useMissionDraftStore((s) => s.manualLaunch)
   const manualHome = useMissionDraftStore((s) => s.manualHome)
-  const manualWaypoints = useMissionDraftStore((s) => s.manualWaypoints)
-  const setManualLaunch = useMissionDraftStore((s) => s.setManualLaunch)
+  const manualItems = useMissionDraftStore((s) => s.manualItems)
   const setManualHome = useMissionDraftStore((s) => s.setManualHome)
-  const moveManualWaypoint = useMissionDraftStore((s) => s.moveManualWaypoint)
-  const selectWaypoint = useUiStore((s) => s.selectWaypoint)
+  const moveManualItem = useMissionDraftStore((s) => s.moveManualItem)
+  const selectManualItem = useUiStore((s) => s.selectManualItem)
 
-  const launchMarkerRef = useRef<maplibregl.Marker | null>(null)
   const homeMarkerRef = useRef<maplibregl.Marker | null>(null)
-  const waypointMarkersRef = useRef<maplibregl.Marker[]>([])
+  const itemMarkersRef = useRef<maplibregl.Marker[]>([])
 
   // Line source/layer — created once, updated in place.
   useEffect(() => {
@@ -92,39 +114,17 @@ export function ManualMissionLayer() {
     if (!map) return
     const source = map.getSource(LINE_SOURCE) as maplibregl.GeoJSONSource | undefined
     if (!source) return
-    const coords: [number, number][] = []
-    if (manualLaunch) coords.push(manualLaunch)
-    for (const wp of manualWaypoints) coords.push([wp.lng, wp.lat])
+    const coords: [number, number][] = manualItems.filter(hasPosition).map((it) => [it.lng, it.lat])
     const feature: Feature<LineString> = {
       type: 'Feature',
       properties: {},
       geometry: { type: 'LineString', coordinates: coords },
     }
     source.setData(coords.length >= 2 ? { type: 'FeatureCollection', features: [feature] } : EMPTY_LINE)
-  }, [map, manualLaunch, manualWaypoints])
+  }, [map, manualItems])
 
-  // Launch marker — created lazily the first time manualLaunch is set (not
-  // necessarily on mount), removed when cleared, position kept in sync
-  // otherwise. Mirrors Home below exactly.
-  useEffect(() => {
-    if (!map) return
-    if (!manualLaunch) {
-      launchMarkerRef.current?.remove()
-      launchMarkerRef.current = null
-      return
-    }
-    if (!launchMarkerRef.current) {
-      const marker = new maplibregl.Marker({ element: pinElement('#34d399', 'LAUNCH'), draggable: true })
-      marker.on('dragend', () => {
-        const ll = marker.getLngLat()
-        setManualLaunch([ll.lng, ll.lat])
-      })
-      launchMarkerRef.current = marker
-    }
-    launchMarkerRef.current.setLngLat(manualLaunch).addTo(map)
-  }, [map, manualLaunch, setManualLaunch])
-
-  // Home marker (mirrors Launch)
+  // Home marker — a separate field, not a mission item (never flown
+  // through; see mission-draft-store.ts's comment on manualHome).
   useEffect(() => {
     if (!map) return
     if (!manualHome) {
@@ -135,6 +135,7 @@ export function ManualMissionLayer() {
     if (!homeMarkerRef.current) {
       const marker = new maplibregl.Marker({ element: pinElement('#60a5fa', 'HOME'), draggable: true })
       marker.on('dragend', () => {
+        suppressNextClick()
         const ll = marker.getLngLat()
         setManualHome([ll.lng, ll.lat])
       })
@@ -143,25 +144,43 @@ export function ManualMissionLayer() {
     homeMarkerRef.current.setLngLat(manualHome).addTo(map)
   }, [map, manualHome, setManualHome])
 
-  // Waypoint markers — full rebuild on every change. A manual mission tops
-  // out at a few dozen points, so recreating them on add/remove/drag is
-  // imperceptible, and sidesteps stale-index bugs from array splicing
-  // (deleting waypoint 2 shifts every later index down by one).
+  // Item markers — full rebuild on every change. A manual mission tops out
+  // at a few dozen points, so recreating them on add/remove/drag is
+  // imperceptible, and (now that identity is a stable `id`, not an array
+  // index) this stays correct no matter how Phase 2B/2E reorders the list.
   useEffect(() => {
     if (!map) return
-    waypointMarkersRef.current.forEach((m) => m.remove())
-    waypointMarkersRef.current = manualWaypoints.map((wp, index) => {
-      const el = waypointElement(index + 1)
+    itemMarkersRef.current.forEach((m) => m.remove())
+
+    let waypointNumber = 0
+    const markers: maplibregl.Marker[] = []
+
+    for (const item of manualItems) {
+      if (item.type === 'takeoff') {
+        const marker = new maplibregl.Marker({ element: pinElement('#34d399', 'LAUNCH'), draggable: true })
+        marker.setLngLat([item.lng, item.lat]).addTo(map)
+        marker.on('dragend', () => {
+          suppressNextClick()
+          const ll = marker.getLngLat()
+          moveManualItem(item.id, [ll.lng, ll.lat])
+        })
+        markers.push(marker)
+        continue
+      }
+      if (!hasPosition(item)) continue // RTL / Change Speed carry no map position (yet)
+
+      const el = elementForItem(item, item.type === 'waypoint' ? ++waypointNumber : 0)
       const marker = new maplibregl.Marker({ element: el, draggable: true })
-      marker.setLngLat([wp.lng, wp.lat]).addTo(map)
+      marker.setLngLat([item.lng, item.lat]).addTo(map)
 
       let dragged = false
       marker.on('dragstart', () => {
         dragged = true
       })
       marker.on('dragend', () => {
+        suppressNextClick()
         const ll = marker.getLngLat()
-        moveManualWaypoint(index, [ll.lng, ll.lat] as LngLat)
+        moveManualItem(item.id, [ll.lng, ll.lat])
       })
       el.addEventListener('click', (e) => {
         e.stopPropagation()
@@ -169,27 +188,40 @@ export function ManualMissionLayer() {
           dragged = false
           return
         }
-        selectWaypoint(index)
+        selectManualItem(item.id)
       })
-      return marker
-    })
-    return () => {
-      waypointMarkersRef.current.forEach((m) => m.remove())
-      waypointMarkersRef.current = []
+      markers.push(marker)
     }
-  }, [map, manualWaypoints, moveManualWaypoint, selectWaypoint])
+
+    itemMarkersRef.current = markers
+    return () => {
+      markers.forEach((m) => m.remove())
+    }
+  }, [map, manualItems, moveManualItem, selectManualItem])
 
   // Full teardown when this component unmounts (switching back to Survey
   // mode) — the effects above only clean up their own marker on a value
-  // change, not on unmount, since a null value legitimately means "no
-  // marker yet" as well as "component going away."
+  // change, not on unmount, since a null/empty value legitimately means
+  // "nothing placed yet" as well as "component going away."
   useEffect(() => {
     return () => {
-      launchMarkerRef.current?.remove()
       homeMarkerRef.current?.remove()
-      waypointMarkersRef.current.forEach((m) => m.remove())
+      itemMarkersRef.current.forEach((m) => m.remove())
     }
   }, [])
 
   return null
+}
+
+function elementForItem(item: MissionItem, waypointNumber: number): HTMLDivElement {
+  switch (item.type) {
+    case 'waypoint':
+      return waypointElement(waypointNumber)
+    case 'loiter':
+      return genericItemElement('L', '#facc15')
+    case 'land':
+      return genericItemElement('LD', '#f87171')
+    default:
+      return waypointElement(waypointNumber)
+  }
 }

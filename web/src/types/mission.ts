@@ -89,16 +89,21 @@ export interface GridRequest {
   camera_angle_deg?: number
 }
 
-export interface ManualWaypointInput {
-  lat: number
-  lon: number
-  altitude_m: number
-}
+// Mirrors server/models/manual_mission.py's discriminated union — the
+// wire-format counterpart to features/manual-mission's internal
+// MissionItem shape (types/mission-items.ts), which uses camelCase and no
+// `type`-per-field-name convention. See toManualItemInput() there.
+export type ManualItemInput =
+  | { type: 'takeoff'; lat: number; lon: number; altitude_m: number }
+  | { type: 'waypoint'; lat: number; lon: number; altitude_m: number }
+  | { type: 'loiter'; lat: number; lon: number; altitude_m: number; hold_time_s: number }
+  | { type: 'rtl' }
+  | { type: 'land'; lat: number; lon: number }
+  | { type: 'change_speed'; speed_ms: number }
 
 export interface ManualMissionRequest {
-  launch: [number, number]
   home: [number, number]
-  waypoints: ManualWaypointInput[]
+  items: ManualItemInput[]
   speed_ms: number
   upload: boolean
   mission_name?: string

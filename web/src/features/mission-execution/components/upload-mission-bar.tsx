@@ -11,9 +11,8 @@ export function UploadMissionBar() {
   const missionMode = useUiStore((s) => s.missionMode)
   const generated = useMissionDraftStore((s) => s.generated)
   const farmPolygon = useMissionDraftStore((s) => s.farmPolygon)
-  const manualLaunch = useMissionDraftStore((s) => s.manualLaunch)
   const manualHome = useMissionDraftStore((s) => s.manualHome)
-  const manualWaypoints = useMissionDraftStore((s) => s.manualWaypoints)
+  const manualItems = useMissionDraftStore((s) => s.manualItems)
   // Both hooks are always called (rules of hooks) — only one is ever
   // actually invoked, based on missionMode, below.
   const uploadSurvey = useUploadMission()
@@ -24,7 +23,11 @@ export function UploadMissionBar() {
   const upload = isSurvey ? uploadSurvey : uploadManual
   const canUpload = isSurvey
     ? Boolean(farmPolygon && farmPolygon.length >= 3)
-    : Boolean(manualLaunch && manualHome && manualWaypoints.length >= 1)
+    : Boolean(
+        manualHome &&
+          manualItems.some((it) => it.type === 'takeoff') &&
+          manualItems.some((it) => it.type === 'waypoint'),
+      )
 
   return (
     <Panel className="flex w-96 items-center justify-between px-3 py-2.5">
