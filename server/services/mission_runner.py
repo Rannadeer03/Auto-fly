@@ -16,6 +16,14 @@ Coordinates the camera and storage services with MAVLink mission execution:
   • When the mission finishes (vehicle disarms, or connection is lost),
     recording stops and telemetry.json / metadata.json / metadata.csv are
     written.
+  • Alongside the above, a MissionSessionContext (services/mission_session.py)
+    is created for the session and a FrameSynchronizer (services/
+    frame_synchronizer.py) is started — the runtime foundation other phases
+    read from instead of building their own mission folders or telemetry
+    lookups. If VARI_ENABLED, a VariPipelineWorker (services/
+    vari_pipeline.py) also starts on its own paced background thread,
+    writing a vegetation-overlay video alongside the original recording —
+    it can never delay flight operations; a slow frame is simply dropped.
 
 Every camera/storage failure is contained: a failed photo never aborts the
 mission.
@@ -26,14 +34,19 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
 from config import settings
 from mavlink.connection import drone_state
+from services.camera_service import camera_service
 from services.capture_strategies import CaptureStrategy, build_capture_strategy
+from services.frame_synchronizer import FrameSynchronizer
+from services.mission_session import MissionSessionContext
 from services.recording_service import recording_service
 from services.storage_service import MissionStorage, storage_service, utc_now_iso
+from services.vari_pipeline import VariPipelineWorker
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +68,10 @@ class MissionRunner:
         self._end_reason: str = ""
         self._log_handler: Optional[logging.Handler] = None
         self._last_completed: Optional[str] = None  # folder name of last finished session
+
+        self._session: Optional[MissionSessionContext] = None
+        self._frame_sync: Optional[FrameSynchronizer] = None
+        self._vari_worker: Optional[VariPipelineWorker] = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -78,6 +95,29 @@ class MissionRunner:
             self._strategy = build_capture_strategy(mission_dict)
             self._end_reason = ""
 
+            self._session = MissionSessionContext(
+                mission_id=self._storage.mission_id,
+                mission_name=clean_name or self._storage.mission_id,
+                mission_start_time=self._started_at,
+                video_file_path=self._storage.video_path,
+                vari_video_file_path=self._storage.vari_video_path,
+                telemetry_log_path=self._storage.telemetry_path,
+                anomaly_db_path=self._storage.anomaly_db_path,
+            )
+            self._frame_sync = FrameSynchronizer(self._session)
+            self._frame_sync.start()
+
+            if settings.VARI_ENABLED:
+                self._vari_worker = VariPipelineWorker(
+                    camera=camera_service,
+                    frame_sync=self._frame_sync,
+                    output_path=self._storage.vari_video_path,
+                    session=self._session,
+                )
+                self._vari_worker.start()
+            else:
+                self._vari_worker = None
+
             self._attach_mission_log(self._storage)
 
             try:
@@ -86,9 +126,13 @@ class MissionRunner:
                 logger.exception("Failed to write mission.json")
 
             if settings.RECORDING_ENABLED:
-                if not recording_service.start(self._storage.video_path):
+                if recording_service.start(self._storage.video_path):
+                    self._session.recording_state = "recording"
+                else:
+                    self._session.recording_state = "failed"
                     logger.warning("Recording did not start for mission session.")
             else:
+                self._session.recording_state = "disabled"
                 logger.info("Recording disabled by configuration (RECORDING_ENABLED=0).")
 
             self._stop_event.clear()
@@ -123,6 +167,7 @@ class MissionRunner:
             active = self._thread is not None and self._thread.is_alive()
             photos = self._strategy.photos_captured if active and self._strategy else 0
             failed = self._strategy.failed_captures if active and self._strategy else 0
+            session = self._session
             return {
                 "active": active,
                 "mission_folder": self._storage.name if active and self._storage else None,
@@ -132,7 +177,30 @@ class MissionRunner:
                 "recording": recording_service.is_recording,
                 "capture_mode": settings.CAPTURE_STRATEGY,
                 "last_completed": self._last_completed,
+                "session_id": session.session_id if active and session else None,
+                "current_waypoint": session.current_waypoint if active and session else 0,
+                "mission_progress": session.mission_progress if active and session else 0.0,
             }
+
+    def get_session_context(self) -> Optional[MissionSessionContext]:
+        """Expose the active session context so other services (frame sync,
+        future VARI/anomaly phases) can read paths/state without creating
+        their own mission folders or filenames."""
+        with self._lock:
+            return self._session
+
+    def get_frame_synchronizer(self) -> Optional[FrameSynchronizer]:
+        """Expose the active frame synchronizer so a future frame-producing
+        service (VARI, anomaly detection) can call sync() once per camera
+        frame instead of building its own telemetry lookup."""
+        with self._lock:
+            return self._frame_sync
+
+    def get_vari_worker(self) -> Optional[VariPipelineWorker]:
+        """Expose the active VARI pipeline worker (e.g. for a future
+        diagnostics surface) without any other service starting its own."""
+        with self._lock:
+            return self._vari_worker
 
     # ── Monitor thread ─────────────────────────────────────────────────────────
 
@@ -156,6 +224,14 @@ class MissionRunner:
 
                 # ── Photo capture (delegated to the active CaptureStrategy) ─────
                 strategy.tick(now, storage)
+
+                # ── Session progress (read by future frame-level phases) ────────
+                if self._session is not None:
+                    self._session.current_waypoint = drone_state.current_waypoint
+                    total = drone_state.waypoint_count
+                    self._session.mission_progress = round(
+                        (drone_state.current_waypoint / total * 100) if total > 0 else 0.0, 1
+                    )
 
                 # ── Completion detection ───────────────────────────────────────
                 if drone_state.armed:
@@ -207,6 +283,23 @@ class MissionRunner:
         reason = self._end_reason or "unknown"
         logger.info("Mission session ending: %s", reason)
 
+        if self._session is not None:
+            self._session.mission_end_time = utc_now_iso()
+            if self._session.recording_state == "recording":
+                self._session.recording_state = "stopped"
+
+        try:
+            if self._vari_worker is not None:
+                self._vari_worker.stop()
+        except Exception:
+            logger.exception("Failed to stop VARI pipeline worker")
+
+        try:
+            frames = self._frame_sync.stop() if self._frame_sync else []
+            storage.write_frame_sync([asdict(f) for f in frames])
+        except Exception:
+            logger.exception("Failed to write frame_sync.json")
+
         try:
             recording_service.stop()
         except Exception:
@@ -252,11 +345,18 @@ class MissionRunner:
         # so the web UI can browse, search and download it without any
         # filesystem access.
         try:
-            storage_service.build_index(storage.root)
+            index = storage_service.build_index(storage.root)
+            stats = index.get("stats") if index else None
+            if self._session is not None and stats:
+                self._session.mission_statistics = stats
+                storage.write_statistics(stats)
         except Exception:
             logger.exception("Failed to build mission index")
         with self._lock:
             self._last_completed = storage.name
+            self._session = None
+            self._frame_sync = None
+            self._vari_worker = None
 
 
 # Module-level singleton
