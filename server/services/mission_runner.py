@@ -18,10 +18,12 @@ Coordinates the camera and storage services with MAVLink mission execution:
     written.
   • Alongside the above, a MissionSessionContext (services/mission_session.py)
     is created for the session and a FrameSynchronizer (services/
-    frame_synchronizer.py) is started — the runtime foundation future phases
-    (VARI processing, anomaly detection) will read from instead of building
-    their own mission folders or telemetry lookups. No image processing
-    happens here.
+    frame_synchronizer.py) is started — the runtime foundation other phases
+    read from instead of building their own mission folders or telemetry
+    lookups. If VARI_ENABLED, a VariPipelineWorker (services/
+    vari_pipeline.py) also starts on its own paced background thread,
+    writing a vegetation-overlay video alongside the original recording —
+    it can never delay flight operations; a slow frame is simply dropped.
 
 Every camera/storage failure is contained: a failed photo never aborts the
 mission.
@@ -38,11 +40,13 @@ from typing import Optional
 
 from config import settings
 from mavlink.connection import drone_state
+from services.camera_service import camera_service
 from services.capture_strategies import CaptureStrategy, build_capture_strategy
 from services.frame_synchronizer import FrameSynchronizer
 from services.mission_session import MissionSessionContext
 from services.recording_service import recording_service
 from services.storage_service import MissionStorage, storage_service, utc_now_iso
+from services.vari_pipeline import VariPipelineWorker
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,7 @@ class MissionRunner:
 
         self._session: Optional[MissionSessionContext] = None
         self._frame_sync: Optional[FrameSynchronizer] = None
+        self._vari_worker: Optional[VariPipelineWorker] = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -101,6 +106,17 @@ class MissionRunner:
             )
             self._frame_sync = FrameSynchronizer(self._session)
             self._frame_sync.start()
+
+            if settings.VARI_ENABLED:
+                self._vari_worker = VariPipelineWorker(
+                    camera=camera_service,
+                    frame_sync=self._frame_sync,
+                    output_path=self._storage.vari_video_path,
+                    session=self._session,
+                )
+                self._vari_worker.start()
+            else:
+                self._vari_worker = None
 
             self._attach_mission_log(self._storage)
 
@@ -179,6 +195,12 @@ class MissionRunner:
         frame instead of building its own telemetry lookup."""
         with self._lock:
             return self._frame_sync
+
+    def get_vari_worker(self) -> Optional[VariPipelineWorker]:
+        """Expose the active VARI pipeline worker (e.g. for a future
+        diagnostics surface) without any other service starting its own."""
+        with self._lock:
+            return self._vari_worker
 
     # ── Monitor thread ─────────────────────────────────────────────────────────
 
@@ -267,6 +289,12 @@ class MissionRunner:
                 self._session.recording_state = "stopped"
 
         try:
+            if self._vari_worker is not None:
+                self._vari_worker.stop()
+        except Exception:
+            logger.exception("Failed to stop VARI pipeline worker")
+
+        try:
             frames = self._frame_sync.stop() if self._frame_sync else []
             storage.write_frame_sync([asdict(f) for f in frames])
         except Exception:
@@ -328,6 +356,7 @@ class MissionRunner:
             self._last_completed = storage.name
             self._session = None
             self._frame_sync = None
+            self._vari_worker = None
 
 
 # Module-level singleton

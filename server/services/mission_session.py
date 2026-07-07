@@ -43,6 +43,11 @@ class MissionSessionContext:
     current_waypoint: int = 0
     mission_progress: float = 0.0
 
+    # Frame-processing performance (e.g. the VARI pipeline) — internal only,
+    # not exposed through GET /mission/session yet. Keyed by pipeline name
+    # (e.g. "vari") so more than one processing worker can report here later.
+    processing_stats: dict = field(default_factory=dict)
+
     def as_dict(self) -> dict:
         """JSON-serialisable snapshot, for status endpoints/logging."""
         return {
@@ -63,4 +68,5 @@ class MissionSessionContext:
             "mission_statistics": self.mission_statistics,
             "current_waypoint": self.current_waypoint,
             "mission_progress": self.mission_progress,
+            "processing_stats": self.processing_stats,
         }

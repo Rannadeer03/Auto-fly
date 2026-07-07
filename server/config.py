@@ -196,6 +196,39 @@ class Settings:
     SSL_CERTFILE: Path = SSL_DIR / "dronai.crt"
     SSL_KEYFILE: Path = SSL_DIR / "dronai.key"
 
+    # ── VARI processing (real-time vegetation index overlay) ──────────────────
+    # Full VARI + threshold + morphology + overlay + encode per frame at the
+    # camera's native 30fps is not realistic on a Raspberry Pi 5 — this runs
+    # on its own paced background worker (services/vari_pipeline.py),
+    # deliberately decoupled from both the camera's frame rate and the
+    # mission runner's monitor loop, so it can never delay flight operations.
+    VARI_ENABLED: bool = _env_bool("VARI_ENABLED", True)
+    VARI_PROCESSING_FPS: float = float(os.environ.get("VARI_PROCESSING_FPS", "5.0"))
+    # VARI = (G-R)/(G+R-B) is clipped to this range, then normalized to 0-255.
+    VARI_CLIP_MIN: float = float(os.environ.get("VARI_CLIP_MIN", "-1.0"))
+    VARI_CLIP_MAX: float = float(os.environ.get("VARI_CLIP_MAX", "1.0"))
+    # A pixel counts as "vegetation" once its normalized (0-255) value falls
+    # within [VARI_THRESHOLD_LOW, VARI_THRESHOLD_HIGH].
+    VARI_THRESHOLD_LOW: int = int(os.environ.get("VARI_THRESHOLD_LOW", "130"))
+    VARI_THRESHOLD_HIGH: int = int(os.environ.get("VARI_THRESHOLD_HIGH", "255"))
+    # Morphological cleanup (opening then closing) on the threshold mask —
+    # kept small deliberately for Pi 5 headroom.
+    VARI_MORPH_KERNEL_SIZE: int = int(os.environ.get("VARI_MORPH_KERNEL_SIZE", "5"))
+    VARI_MORPH_OPEN_ITERATIONS: int = int(os.environ.get("VARI_MORPH_OPEN_ITERATIONS", "1"))
+    VARI_MORPH_CLOSE_ITERATIONS: int = int(os.environ.get("VARI_MORPH_CLOSE_ITERATIONS", "1"))
+    # Overlay: semi-transparent circular markers sampled on a grid over the
+    # cleaned mask — never a blocky/solid mask fill.
+    VARI_OVERLAY_ALPHA: float = float(os.environ.get("VARI_OVERLAY_ALPHA", "0.45"))
+    VARI_OVERLAY_MARKER_RADIUS_PX: int = int(os.environ.get("VARI_OVERLAY_MARKER_RADIUS_PX", "6"))
+    VARI_OVERLAY_MARKER_SPACING_PX: int = int(os.environ.get("VARI_OVERLAY_MARKER_SPACING_PX", "14"))
+    # Fraction of a grid cell that must be "vegetation" before a marker is drawn.
+    VARI_OVERLAY_MIN_CELL_COVERAGE: float = float(
+        os.environ.get("VARI_OVERLAY_MIN_CELL_COVERAGE", "0.3")
+    )
+    VARI_OVERLAY_COLOR_BGR: tuple = tuple(
+        int(x) for x in os.environ.get("VARI_OVERLAY_COLOR_BGR", "0,255,0").split(",")
+    )
+
     # ── Mission estimation constants ───────────────────────────────────────────
     DEFAULT_CRUISE_SPEED_MS: float = 5.0
     DEFAULT_BATTERY_CAPACITY_MAH: float = 16000.0
