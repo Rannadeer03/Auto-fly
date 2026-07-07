@@ -1,0 +1,16 @@
+{
+  "project": "DronAI",
+  "repository": "https://github.com/Rannadeer03/Auto-fly.git",
+  "branch": "mission-history",
+  "commit": "9ee2fc7",
+  "frontend": "React 19 + TypeScript + Vite 8",
+  "backend": "FastAPI (Python 3.11+)",
+  "flight_controller": "Pixhawk 2.4.8",
+  "companion": "Raspberry Pi 5",
+  "camera": "USB webcam (OpenCV, auto-detected device)",
+  "planner": {
+    "survey": true,
+    "manual": true
+  },
+  "phase": "Phase 2 (Manual Mission Planner UI)"
+}

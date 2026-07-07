@@ -1,0 +1,8 @@
+{
+  "avg_vari_ms": 3.47,
+  "max_vari_ms": 6.62,
+  "avg_tracking_ms": 0.01,
+  "max_tracking_ms": 0.06,
+  "avg_generation_ms": 0.12,
+  "total_pipeline_ms": 701.64
+}
