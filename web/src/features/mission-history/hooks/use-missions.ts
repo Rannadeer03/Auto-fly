@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { MISSION_LIST_POLL_MS } from '@/constants/api'
 import {
   deleteMission,
   fetchMissionDetail,
@@ -12,6 +13,12 @@ export function useMissionList(query: string) {
     queryKey: ['missions', query],
     queryFn: ({ signal }) => listMissions(query, signal),
     staleTime: 5000,
+    // Mission folders are created/finalised entirely server-side (a flight
+    // completing, possibly triggered by RC/QGroundControl, not this UI), so
+    // there's no frontend mutation to invalidate this list on — poll it
+    // instead, and catch up immediately when the tab regains focus.
+    refetchInterval: MISSION_LIST_POLL_MS,
+    refetchOnWindowFocus: true,
   })
 }
 

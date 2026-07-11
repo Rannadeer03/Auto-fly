@@ -437,6 +437,7 @@ class StorageService:
         try:
             return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
+            logger.warning("Could not read/parse %s — treating as missing.", path, exc_info=True)
             return None
 
 

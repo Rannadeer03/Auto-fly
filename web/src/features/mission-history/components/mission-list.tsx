@@ -16,7 +16,7 @@ interface MissionListProps {
  * mission folders — only the visible rows are ever mounted. */
 export function MissionList({ selected, onSelect }: MissionListProps) {
   const [query, setQuery] = useState('')
-  const { data, isLoading } = useMissionList(query)
+  const { data, isLoading, isError, error } = useMissionList(query)
   const parentRef = useRef<HTMLDivElement>(null)
 
   const missions = data?.missions ?? []
@@ -41,7 +41,12 @@ export function MissionList({ selected, onSelect }: MissionListProps) {
 
       <div ref={parentRef} className="flex-1 overflow-y-auto">
         {isLoading && <p className="p-4 text-xs text-text-tertiary">Loading…</p>}
-        {!isLoading && missions.length === 0 && (
+        {isError && (
+          <p className="p-4 text-xs text-danger-500">
+            Could not load missions — {error instanceof Error ? error.message : 'unknown error'}
+          </p>
+        )}
+        {!isLoading && !isError && missions.length === 0 && (
           <p className="p-4 text-xs text-text-tertiary">No missions recorded yet.</p>
         )}
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
