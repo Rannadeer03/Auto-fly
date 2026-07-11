@@ -17,13 +17,11 @@ Coordinates the camera and storage services with MAVLink mission execution:
     recording stops and telemetry.json / metadata.json / metadata.csv are
     written.
   • Alongside the above, a MissionSessionContext (services/mission_session.py)
-    is created for the session and a FrameSynchronizer (services/
-    frame_synchronizer.py) is started — the runtime foundation other phases
-    read from instead of building their own mission folders or telemetry
-    lookups. If VARI_ENABLED, a VariPipelineWorker (services/
-    vari_pipeline.py) also starts on its own paced background thread,
-    writing a vegetation-overlay video alongside the original recording —
-    it can never delay flight operations; a slow frame is simply dropped.
+    tracks session-level state (recording status, current waypoint, mission
+    progress) for the life of the session.
+  • frame_sync.json is written at mission end from the same telemetry
+    samples already collected for telemetry.json — one telemetry source
+    (drone_state, sampled by this monitor loop), no separate reader.
 
 Every camera/storage failure is contained: a failed photo never aborts the
 mission.
@@ -34,19 +32,15 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
 from config import settings
 from mavlink.connection import drone_state
-from services.camera_service import camera_service
 from services.capture_strategies import CaptureStrategy, build_capture_strategy
-from services.frame_synchronizer import FrameSynchronizer
 from services.mission_session import MissionSessionContext
 from services.recording_service import recording_service
 from services.storage_service import MissionStorage, storage_service, utc_now_iso
-from services.vari_pipeline import VariPipelineWorker
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +64,6 @@ class MissionRunner:
         self._last_completed: Optional[str] = None  # folder name of last finished session
 
         self._session: Optional[MissionSessionContext] = None
-        self._frame_sync: Optional[FrameSynchronizer] = None
-        self._vari_worker: Optional[VariPipelineWorker] = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -100,23 +92,8 @@ class MissionRunner:
                 mission_name=clean_name or self._storage.mission_id,
                 mission_start_time=self._started_at,
                 video_file_path=self._storage.video_path,
-                vari_video_file_path=self._storage.vari_video_path,
                 telemetry_log_path=self._storage.telemetry_path,
-                anomaly_db_path=self._storage.anomaly_db_path,
             )
-            self._frame_sync = FrameSynchronizer(self._session)
-            self._frame_sync.start()
-
-            if settings.VARI_ENABLED:
-                self._vari_worker = VariPipelineWorker(
-                    camera=camera_service,
-                    frame_sync=self._frame_sync,
-                    output_path=self._storage.vari_video_path,
-                    session=self._session,
-                )
-                self._vari_worker.start()
-            else:
-                self._vari_worker = None
 
             self._attach_mission_log(self._storage)
 
@@ -183,24 +160,10 @@ class MissionRunner:
             }
 
     def get_session_context(self) -> Optional[MissionSessionContext]:
-        """Expose the active session context so other services (frame sync,
-        future VARI/anomaly phases) can read paths/state without creating
-        their own mission folders or filenames."""
+        """Expose the active session context so other services can read
+        paths/state without creating their own mission folders or filenames."""
         with self._lock:
             return self._session
-
-    def get_frame_synchronizer(self) -> Optional[FrameSynchronizer]:
-        """Expose the active frame synchronizer so a future frame-producing
-        service (VARI, anomaly detection) can call sync() once per camera
-        frame instead of building its own telemetry lookup."""
-        with self._lock:
-            return self._frame_sync
-
-    def get_vari_worker(self) -> Optional[VariPipelineWorker]:
-        """Expose the active VARI pipeline worker (e.g. for a future
-        diagnostics surface) without any other service starting its own."""
-        with self._lock:
-            return self._vari_worker
 
     # ── Monitor thread ─────────────────────────────────────────────────────────
 
@@ -289,18 +252,6 @@ class MissionRunner:
                 self._session.recording_state = "stopped"
 
         try:
-            if self._vari_worker is not None:
-                self._vari_worker.stop()
-        except Exception:
-            logger.exception("Failed to stop VARI pipeline worker")
-
-        try:
-            frames = self._frame_sync.stop() if self._frame_sync else []
-            storage.write_frame_sync([asdict(f) for f in frames])
-        except Exception:
-            logger.exception("Failed to write frame_sync.json")
-
-        try:
             recording_service.stop()
         except Exception:
             logger.exception("Failed to stop recording")
@@ -309,6 +260,13 @@ class MissionRunner:
             storage.flush()
         except Exception:
             logger.exception("Failed to write telemetry.json")
+
+        try:
+            # Same telemetry samples already proven correct for telemetry.json —
+            # one telemetry source, no separate frame-synchronized reader.
+            storage.write_frame_sync(storage.telemetry_samples)
+        except Exception:
+            logger.exception("Failed to write frame_sync.json")
 
         photos_captured = self._strategy.photos_captured if self._strategy else 0
         failed_captures = self._strategy.failed_captures if self._strategy else 0
@@ -355,8 +313,6 @@ class MissionRunner:
         with self._lock:
             self._last_completed = storage.name
             self._session = None
-            self._frame_sync = None
-            self._vari_worker = None
 
 
 # Module-level singleton
