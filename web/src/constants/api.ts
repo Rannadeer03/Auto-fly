@@ -13,6 +13,11 @@ export const MISSION_SESSION_POLL_MS = 2000
 export const HEALTH_POLL_MS = 4000
 export const CAMERA_STATUS_POLL_MS = 5000
 export const LOGS_POLL_MS = 5000
+// Mission folders are written entirely server-side (mission_runner.py, driven
+// by the watchdog/RC switch/QGroundControl — not by any frontend mutation),
+// so the Mission Files list has no "create" event to invalidate on. Poll it
+// instead so a finished flight appears without a manual page reload.
+export const MISSION_LIST_POLL_MS = 5000
 
 // Debounce for regenerating the survey after a flight-parameter edit.
 export const SURVEY_REGENERATE_DEBOUNCE_MS = 350
