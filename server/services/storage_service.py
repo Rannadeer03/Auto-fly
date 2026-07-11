@@ -6,8 +6,7 @@ isolated in its own folder, named `<sanitized_mission_name>_<timestamp>`
 
     missions/
         <Mission_Name>_<YYYYMMDD_HHMMSS>/
-            video.mp4              # original_video
-            vari_video.mp4         # placeholder — written by a future VARI phase
+            video.mp4              # flight recording
             images/
                 photo_00001.jpg
                 thumbs/
@@ -15,14 +14,13 @@ isolated in its own folder, named `<sanitized_mission_name>_<timestamp>`
                 ...
             logs/
                 mission.log
-            telemetry.json
-            anomalies/             # placeholder — populated by a future anomaly-detection phase
+            telemetry.json         # continuous telemetry samples for the whole flight
             statistics.json        # mission-level flight statistics (see MissionSessionContext)
             metadata.json          # mission summary + full per-image metadata
             metadata.csv           # per-image metadata, flattened
             mission.json           # the flight plan that was executed
             index.json             # auto-generated file index + flight stats
-            frame_sync.json        # one synchronized telemetry record per camera frame
+            frame_sync.json        # the same continuous telemetry samples as telemetry.json
 
 Every field above is exposed through services/mission_session.py's
 MissionSessionContext so other services never need to build their own
@@ -89,9 +87,7 @@ class MissionStorage:
         self.images_dir = root / "images"
         self.thumbs_dir = self.images_dir / "thumbs"
         self.logs_dir = root / "logs"
-        self.anomalies_dir = root / "anomalies"  # placeholder — future anomaly-detection phase
         self.video_path = root / "video.mp4"
-        self.vari_video_path = root / "vari_video.mp4"  # placeholder — future VARI phase
         self.telemetry_path = root / "telemetry.json"
         self.metadata_json_path = root / "metadata.json"
         self.metadata_csv_path = root / "metadata.csv"
@@ -99,13 +95,12 @@ class MissionStorage:
         self.log_path = self.logs_dir / "mission.log"
         self.statistics_path = root / "statistics.json"
         self.frame_sync_path = root / "frame_sync.json"
-        self.anomaly_db_path = self.anomalies_dir / "anomalies.db"  # placeholder path only
 
         self._lock = threading.Lock()
         self._telemetry_samples: list[dict] = []
         self._image_records: list[dict] = []
 
-        for d in (self.root, self.images_dir, self.thumbs_dir, self.logs_dir, self.anomalies_dir):
+        for d in (self.root, self.images_dir, self.thumbs_dir, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -160,6 +155,13 @@ class MissionStorage:
         with self._lock:
             self._telemetry_samples.append(sample)
 
+    @property
+    def telemetry_samples(self) -> list[dict]:
+        """Copy of every telemetry sample collected so far this mission —
+        the same continuous samples flush() writes to telemetry.json."""
+        with self._lock:
+            return list(self._telemetry_samples)
+
     def write_mission(self, mission_dict: Optional[dict]) -> None:
         """Persist the executed flight plan as mission.json."""
         self.mission_path.write_text(
@@ -197,14 +199,15 @@ class MissionStorage:
 
     def write_statistics(self, stats: dict) -> None:
         """Write statistics.json — kept separate from metadata.json so a
-        future phase (e.g. VARI-derived crop analytics) can extend mission
-        statistics without touching the flight-record file."""
+        future phase can extend mission statistics without touching the
+        flight-record file."""
         self.statistics_path.write_text(json.dumps(stats, indent=2, default=str))
 
     def write_frame_sync(self, records: list[dict]) -> None:
-        """Write frame_sync.json — one synchronized telemetry record per
-        camera frame (see services/frame_synchronizer.py). No image data is
-        stored here, only the metadata association future phases key off."""
+        """Write frame_sync.json — the same continuous telemetry samples as
+        telemetry.json, kept as a separate named artifact. One telemetry
+        source (drone_state, sampled by the mission monitor loop); no
+        separate reader or cached snapshot."""
         self.frame_sync_path.write_text(json.dumps(records, indent=2, default=str))
 
 
