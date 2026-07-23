@@ -86,9 +86,25 @@ On `POST /start` (or the START button) a mission session begins:
   
   Every photo's full metadata (position, attitude, waypoint number, capture
   sequence, drone speed, GPS fix quality, satellite count, camera
-  orientation, mission name/ID) is accumulated during the flight and written
-  to `metadata.json`/`metadata.csv` at the end. A thumbnail is generated
-  alongside each full-resolution photo for the frontend gallery.
+  orientation, mission name/ID, sharpness scores, checksum) is accumulated
+  during the flight and written to `metadata.json`/`metadata.csv` at the
+  end — the same record is embedded as EXIF/GPS metadata directly into each
+  JPEG (`EXIF_ENABLED`), so photos stay usable in GIS tools even without the
+  sidecar files. A thumbnail is generated alongside each full-resolution
+  photo for the frontend gallery.
+
+  Each capture is scored on sharpness (`services/image_quality.py` —
+  variance-of-Laplacian, Tenengrad, Brenner, edge density, combined into one
+  confidence score) and retried up to `CAPTURE_RETRY_LIMIT` times if it
+  comes out blurry; the best frame seen is kept either way, so a mission
+  never skips a waypoint's shot outright.
+
+  Before AUTO mode is allowed, `POST /start` runs a pre-flight camera
+  validation burst (`services/camera_validation.py`): captures
+  `CAMERA_VALIDATION_FRAME_COUNT` frames from the live feed, and blocks
+  mission start (`CAMERA_VALIDATION_ENABLED`) if the sharpest one never
+  clears `QUALITY_CONFIDENCE_THRESHOLD`, retrying the whole burst up to
+  `CAMERA_VALIDATION_RETRY_LIMIT` times first.
 - when the vehicle disarms (mission finished), recording stops and all files
   are finalised.
 
@@ -122,7 +138,8 @@ missions/<Mission_Name>_<timestamp>/
 | POST | `/clear` | Clear mission |
 | GET | `/telemetry` | Telemetry snapshot (1 Hz poll) |
 | POST | `/arm`, `/disarm`, `/start`, `/pause`, `/resume`, `/rtl`, `/land`, `/emergency_stop` | Flight commands |
-| GET | `/camera/status` | Camera + recording status |
+| GET | `/camera/status` | Camera + recording status (incl. frozen-frame flag) |
+| GET | `/camera/capabilities` | What the camera/driver actually reports (resolution, fps, autofocus support) |
 | POST | `/camera/photo` | Manual photo |
 | POST | `/camera/recording/start`, `/camera/recording/stop` | Manual recording |
 | GET | `/missions` | Mission history |
@@ -155,6 +172,12 @@ source.
 | `RECORDING_ENABLED` | `1` | Record video during missions |
 | `MIN_BATTERY_VOLTAGE` / `MIN_BATTERY_PERCENT` | `22.2` / `20` | Below this, ARM is rejected |
 | `MIN_GPS_SATELLITES` / `REQUIRED_GPS_FIX` | `6` / `3` | Below this, ARM/AUTO is rejected |
+| `QUALITY_CONFIDENCE_THRESHOLD` | `0.35` | Min. combined sharpness confidence (0..1) for a capture to be accepted |
+| `CAPTURE_RETRY_LIMIT` | `2` | Per-waypoint retries when a capture scores below threshold |
+| `CAMERA_VALIDATION_ENABLED` | `1` | Block `POST /start` (AUTO) if pre-flight camera validation fails |
+| `CAMERA_VALIDATION_FRAME_COUNT` / `_RETRY_LIMIT` | `10` / `1` | Validation burst size / retry attempts before failing |
+| `CAMERA_FROZEN_FRAME_THRESHOLD` | `15` | Consecutive identical frames before the capture thread forces a reopen |
+| `EXIF_ENABLED` | `1` | Embed GPS/mission/quality metadata as EXIF into every captured JPEG |
 | `DEFAULT_ALTITUDE_M` / `DEFAULT_SPEED_MS` | `30` / `5` | Planning defaults |
 | `DEFAULT_SIDE_OVERLAP_PCT` / `DEFAULT_FRONT_OVERLAP_PCT` | `65` / `75` | Overlap defaults |
 | `MISSIONS_DIR` | `server/missions` | Mission output root |

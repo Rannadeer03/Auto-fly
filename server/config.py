@@ -107,6 +107,60 @@ class Settings:
     # something measured dynamically per shot.
     CAMERA_PITCH_DEG: float = float(os.environ.get("CAMERA_PITCH_DEG", "-90.0"))
 
+    # Descriptive identity fields for this rig's fixed USB camera — recorded
+    # into EXIF/metadata. Not queryable from a generic UVC webcam, so they're
+    # configured rather than auto-detected.
+    CAMERA_MODEL: str = os.environ.get("CAMERA_MODEL", "Generic USB Camera")
+    CAMERA_SERIAL: str = os.environ.get("CAMERA_SERIAL", "unknown")
+    CAMERA_LENS: str = os.environ.get("CAMERA_LENS", "unknown")
+    DRONEAI_VERSION: str = os.environ.get("DRONEAI_VERSION", "0.0.0")
+
+    JPEG_QUALITY: int = int(os.environ.get("JPEG_QUALITY", "92"))
+    THUMBNAIL_JPEG_QUALITY: int = int(os.environ.get("THUMBNAIL_JPEG_QUALITY", "80"))
+    THUMBNAIL_WIDTH_PX: int = int(os.environ.get("THUMBNAIL_WIDTH_PX", "320"))
+
+    # ── Image quality scoring (services/image_quality.py) ─────────────────────
+    # Reference values each raw metric is normalised against (metric/ref,
+    # capped at 1.0) before being combined into a single 0..1 confidence
+    # score. Tuned for 1280x720 daylight aerial nadir shots — override per
+    # camera/altitude if shots are consistently mis-scored.
+    QUALITY_LAPLACIAN_REF: float = float(os.environ.get("QUALITY_LAPLACIAN_REF", "150.0"))
+    QUALITY_TENENGRAD_REF: float = float(os.environ.get("QUALITY_TENENGRAD_REF", "2000.0"))
+    QUALITY_BRENNER_REF: float = float(os.environ.get("QUALITY_BRENNER_REF", "3000.0"))
+    QUALITY_EDGE_DENSITY_REF: float = float(os.environ.get("QUALITY_EDGE_DENSITY_REF", "0.15"))
+
+    QUALITY_WEIGHT_LAPLACIAN: float = float(os.environ.get("QUALITY_WEIGHT_LAPLACIAN", "0.4"))
+    QUALITY_WEIGHT_TENENGRAD: float = float(os.environ.get("QUALITY_WEIGHT_TENENGRAD", "0.3"))
+    QUALITY_WEIGHT_BRENNER: float = float(os.environ.get("QUALITY_WEIGHT_BRENNER", "0.2"))
+    QUALITY_WEIGHT_EDGE_DENSITY: float = float(os.environ.get("QUALITY_WEIGHT_EDGE_DENSITY", "0.1"))
+
+    # Minimum combined confidence (0..1) for a captured frame to be accepted.
+    QUALITY_CONFIDENCE_THRESHOLD: float = float(
+        os.environ.get("QUALITY_CONFIDENCE_THRESHOLD", "0.35")
+    )
+    # Per-waypoint capture retries when the captured frame scores below
+    # threshold (0 = accept whatever was captured, never retry).
+    CAPTURE_RETRY_LIMIT: int = int(os.environ.get("CAPTURE_RETRY_LIMIT", "2"))
+
+    # ── Pre-flight camera validation (services/camera_validation.py) ──────────
+    CAMERA_VALIDATION_ENABLED: bool = _env_bool("CAMERA_VALIDATION_ENABLED", True)
+    CAMERA_VALIDATION_FRAME_COUNT: int = int(os.environ.get("CAMERA_VALIDATION_FRAME_COUNT", "10"))
+    CAMERA_VALIDATION_RETRY_LIMIT: int = int(os.environ.get("CAMERA_VALIDATION_RETRY_LIMIT", "1"))
+    # Max time to wait for a fresh (not-yet-seen) published frame per attempt.
+    CAMERA_VALIDATION_FRAME_WAIT_S: float = float(
+        os.environ.get("CAMERA_VALIDATION_FRAME_WAIT_S", "1.0")
+    )
+
+    # ── Camera health monitor (services/camera_service.py) ────────────────────
+    # Consecutive byte-identical published frames before the capture thread
+    # treats the device as frozen and forces a reopen. A live sensor's frames
+    # always differ by at least noise, so identical frames repeated this many
+    # times means the driver/USB stopped actually updating the buffer.
+    CAMERA_FROZEN_FRAME_THRESHOLD: int = int(os.environ.get("CAMERA_FROZEN_FRAME_THRESHOLD", "15"))
+
+    # ── EXIF metadata (services/exif_service.py) ───────────────────────────────
+    EXIF_ENABLED: bool = _env_bool("EXIF_ENABLED", True)
+
     # ── Mission automation ─────────────────────────────────────────────────────
     # Top-level capture strategy for survey missions:
     #   "hover"      — mandatory Position Hold at every survey waypoint, then

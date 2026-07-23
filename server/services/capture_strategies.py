@@ -8,7 +8,10 @@ needed to swap behaviour; no other code touches the decision logic.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
+import uuid
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -16,6 +19,8 @@ from config import settings
 from mavlink.connection import drone_state
 from parser.waypoint_parser import haversine_m
 from services.camera_service import camera_service
+from services.exif_service import embed_exif
+from services.image_quality import score_frame
 from services.storage_service import MissionStorage
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,32 @@ class CaptureStrategy(ABC):
             return True
         return drone_state.armed and drone_state.flight_mode.upper() == "AUTO"
 
+    def _select_best_frame(self):
+        """Grab up to (1 + CAPTURE_RETRY_LIMIT) frames, scoring each with
+        image_quality.score_frame, and return the sharpest one — stopping
+        early the moment one clears the quality threshold. Each retry waits
+        briefly for a genuinely new published frame rather than rescoring
+        the same one."""
+        best_frame = None
+        best_score = None
+        last_ts = None
+        for _ in range(settings.CAPTURE_RETRY_LIMIT + 1):
+            frame, ts = camera_service.get_frame_with_ts()
+            if frame is None:
+                continue
+            if ts == last_ts:
+                time.sleep(0.05)
+                frame, ts = camera_service.get_frame_with_ts()
+                if frame is None:
+                    continue
+            last_ts = ts
+            score = score_frame(frame)
+            if best_score is None or score.confidence > best_score.confidence:
+                best_frame, best_score = frame, score
+            if score.passed:
+                break
+        return best_frame, best_score
+
     def _capture_one(self, storage: MissionStorage, waypoint_number: int) -> bool:
         """Take one photo, verify it saved, and record its full metadata.
 
@@ -48,21 +79,51 @@ class CaptureStrategy(ABC):
             capture_sequence = self.photos_captured + 1
             path = storage.next_photo_path(capture_sequence)
             thumb_path = storage.thumb_path_for(path)
-            if not camera_service.capture_photo(path, thumb_path=thumb_path):
+
+            frame, quality = self._select_best_frame()
+            if frame is None:
                 self.failed_captures += 1
                 logger.error(
-                    "Capture failed at waypoint %d (%d failed capture(s) so far this mission).",
+                    "Capture failed at waypoint %d: no camera frame available "
+                    "(%d failed capture(s) so far this mission).",
+                    waypoint_number, self.failed_captures,
+                )
+                return False
+            if quality is not None and not quality.passed:
+                logger.warning(
+                    "Waypoint %d: best of %d attempt(s) still below quality threshold "
+                    "(confidence=%.3f) — keeping it anyway rather than skipping the shot.",
+                    waypoint_number, settings.CAPTURE_RETRY_LIMIT + 1, quality.confidence,
+                )
+
+            if not camera_service.write_frame(frame, path, thumb_path=thumb_path):
+                self.failed_captures += 1
+                logger.error(
+                    "Capture failed at waypoint %d: write to disk failed "
+                    "(%d failed capture(s) so far this mission).",
                     waypoint_number, self.failed_captures,
                 )
                 return False
 
-            storage.record_photo(
+            # checksum is filled in after EXIF embedding below — embedding
+            # rewrites the file's bytes, and a checksum has to describe the
+            # file as it will actually sit on disk (a file can't carry a
+            # hash of itself, so the EXIF UserComment's copy of this field
+            # is necessarily blank; metadata.json/csv hold the real one).
+            record = storage.record_photo(
                 path,
                 drone_state.snapshot(),
                 waypoint_number=waypoint_number,
                 capture_sequence=capture_sequence,
                 camera_orientation_deg=settings.CAMERA_PITCH_DEG,
+                image_id=str(uuid.uuid4()),
+                quality=quality.as_dict() if quality is not None else None,
+                checksum_sha256="",
             )
+            height, width = frame.shape[:2]
+            embed_exif(path, record, width, height)
+            record["checksum_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+
             self.photos_captured += 1
             return True
         except Exception:

@@ -49,6 +49,7 @@ _ZIP_CHUNK_BYTES = 512 * 1024
 # dict.keys() happens to be") so the CSV header never reorders between runs.
 IMAGE_METADATA_FIELDS = [
     "filename",
+    "image_id",
     "mission_name",
     "mission_id",
     "timestamp",
@@ -65,6 +66,13 @@ IMAGE_METADATA_FIELDS = [
     "drone_speed_ms",
     "gps_fix_quality",
     "satellites_visible",
+    "sharpness_laplacian",
+    "sharpness_tenengrad",
+    "sharpness_brenner",
+    "edge_density",
+    "quality_confidence",
+    "quality_passed",
+    "checksum_sha256",
 ]
 
 logger = logging.getLogger(__name__)
@@ -113,35 +121,43 @@ class MissionStorage:
         waypoint_number: int,
         capture_sequence: int,
         camera_orientation_deg: float,
-    ) -> None:
+        image_id: str = "",
+        quality: Optional[dict] = None,
+        checksum_sha256: str = "",
+    ) -> dict:
         """Store full metadata for one captured photo (used for mapping,
-        the frontend gallery, and metadata.json/metadata.csv)."""
+        the frontend gallery, EXIF embedding, and metadata.json/csv) and
+        return the record — the single source of truth every output
+        (EXIF, JSON, CSV) is built from, so they can never drift apart."""
         from mavlink.connection import GPS_FIX_NAMES  # local import avoids a cycle
 
+        record = {
+            "filename": f"images/{path.name}",
+            "image_id": image_id,
+            "mission_name": self.mission_name,
+            "mission_id": self.mission_id,
+            "timestamp": utc_now_iso(),
+            "latitude": telemetry.get("latitude", 0.0),
+            "longitude": telemetry.get("longitude", 0.0),
+            "altitude_rel": telemetry.get("altitude_rel", 0.0),
+            "altitude_msl": telemetry.get("altitude_msl", 0.0),
+            "heading_deg": telemetry.get("yaw", 0.0),
+            "pitch_deg": telemetry.get("pitch", 0.0),
+            "roll_deg": telemetry.get("roll", 0.0),
+            "camera_orientation_deg": camera_orientation_deg,
+            "waypoint_number": waypoint_number,
+            "capture_sequence": capture_sequence,
+            "drone_speed_ms": telemetry.get("ground_speed", 0.0),
+            "gps_fix_quality": GPS_FIX_NAMES.get(
+                telemetry.get("gps_fix_type", 0), "Unknown"
+            ),
+            "satellites_visible": telemetry.get("gps_satellites", 0),
+            **(quality or {}),
+            "checksum_sha256": checksum_sha256,
+        }
         with self._lock:
-            self._image_records.append(
-                {
-                    "filename": f"images/{path.name}",
-                    "mission_name": self.mission_name,
-                    "mission_id": self.mission_id,
-                    "timestamp": utc_now_iso(),
-                    "latitude": telemetry.get("latitude", 0.0),
-                    "longitude": telemetry.get("longitude", 0.0),
-                    "altitude_rel": telemetry.get("altitude_rel", 0.0),
-                    "altitude_msl": telemetry.get("altitude_msl", 0.0),
-                    "heading_deg": telemetry.get("yaw", 0.0),
-                    "pitch_deg": telemetry.get("pitch", 0.0),
-                    "roll_deg": telemetry.get("roll", 0.0),
-                    "camera_orientation_deg": camera_orientation_deg,
-                    "waypoint_number": waypoint_number,
-                    "capture_sequence": capture_sequence,
-                    "drone_speed_ms": telemetry.get("ground_speed", 0.0),
-                    "gps_fix_quality": GPS_FIX_NAMES.get(
-                        telemetry.get("gps_fix_type", 0), "Unknown"
-                    ),
-                    "satellites_visible": telemetry.get("gps_satellites", 0),
-                }
-            )
+            self._image_records.append(record)
+        return record
 
     def append_telemetry(self, sample: dict) -> None:
         with self._lock:

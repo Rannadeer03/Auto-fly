@@ -72,6 +72,13 @@ class HealthChecker:
         if not state.heartbeat_ok:
             failures.append("Heartbeat lost.")
 
+        if settings.CAMERA_VALIDATION_ENABLED:
+            from services.camera_validation import validate_camera  # avoids import cycle
+
+            result = validate_camera()
+            if not result.passed:
+                failures.append(f"Camera validation failed: {result.reason}")
+
         if failures:
             logger.warning("AUTO pre-check failed: %s", " | ".join(failures))
 

@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from config import settings
+from services.camera_health import FrameFreezeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ class FrameStats:
     configured_height: int
     configured_fps: int
     last_frame_age_seconds: Optional[float]
+    frozen: bool
 
 
 class CameraService:
@@ -84,6 +86,8 @@ class CameraService:
         self._frame_timestamps: deque[float] = deque(maxlen=240)
         self._frame_count = 0
         self._healthy = False
+        self._frozen = False
+        self._freeze_detector = FrameFreezeDetector(settings.CAMERA_FROZEN_FRAME_THRESHOLD)
         self._active_device: str = settings.CAMERA_DEVICE
 
         self._thread: Optional[threading.Thread] = None
@@ -129,25 +133,31 @@ class CameraService:
         with self._lock:
             return self._latest_frame
 
-    def capture_photo(
-        self, path: Path, thumb_path: Optional[Path] = None, thumb_width: int = 320
+    def get_frame_with_ts(self) -> tuple[Optional[np.ndarray], Optional[float]]:
+        """Return the latest frame together with its publish timestamp
+        (`time.monotonic()`), so a caller can detect whether a later call
+        observed a genuinely new frame."""
+        with self._lock:
+            return self._latest_frame, self._latest_frame_ts
+
+    def write_frame(
+        self,
+        frame: np.ndarray,
+        path: Path,
+        thumb_path: Optional[Path] = None,
+        thumb_width: int = settings.THUMBNAIL_WIDTH_PX,
     ) -> bool:
-        """Write the latest frame to *path* as a JPEG, verifying the file
-        actually landed on disk with content. Returns False if no frame was
-        available, the write failed, or the resulting file is missing/empty.
+        """Write *frame* to *path* as a JPEG, verifying the file actually
+        landed on disk with content. Returns False if the write failed or
+        the resulting file is missing/empty.
 
         If *thumb_path* is given, also writes a small resized JPEG there —
         used for the frontend gallery so it never has to pull full-res
         images just to render a grid of previews. Thumbnail failures are
         logged but never fail the main capture (non-critical, best-effort).
         """
-        frame = self.get_frame()
-        if frame is None:
-            logger.warning("Photo capture failed: no camera frame available")
-            return False
-
         path.parent.mkdir(parents=True, exist_ok=True)
-        ok = cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        ok = cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, settings.JPEG_QUALITY])
         if not ok:
             logger.error("cv2.imwrite failed for %s", path)
             return False
@@ -164,12 +174,67 @@ class CameraService:
                 thumb = cv2.resize(
                     frame, (thumb_width, thumb_height), interpolation=cv2.INTER_AREA
                 )
-                if not cv2.imwrite(str(thumb_path), thumb, [cv2.IMWRITE_JPEG_QUALITY, 80]):
+                if not cv2.imwrite(
+                    str(thumb_path), thumb, [cv2.IMWRITE_JPEG_QUALITY, settings.THUMBNAIL_JPEG_QUALITY]
+                ):
                     logger.warning("Thumbnail write failed for %s", thumb_path)
             except Exception:
                 logger.exception("Thumbnail generation failed for %s (non-fatal)", path)
 
         return True
+
+    def capture_photo(
+        self, path: Path, thumb_path: Optional[Path] = None, thumb_width: int = settings.THUMBNAIL_WIDTH_PX
+    ) -> bool:
+        """Grab the latest frame and write it to *path* (+ optional thumb).
+        Returns False if no frame was available yet or the write failed."""
+        frame = self.get_frame()
+        if frame is None:
+            logger.warning("Photo capture failed: no camera frame available")
+            return False
+        return self.write_frame(frame, path, thumb_path=thumb_path, thumb_width=thumb_width)
+
+    def get_capabilities(self) -> dict:
+        """Best-effort snapshot of what this camera/driver actually reports.
+
+        Deliberately limited to properties a generic UVC webcam can answer
+        through OpenCV/V4L2 — no PTZ/zoom/manual-focus-scan claims, since
+        this rig's camera is a fixed-mount USB webcam with none of that
+        hardware.
+        """
+        with self._lock:
+            device = self._active_device
+        caps = {
+            "device": device,
+            "model": settings.CAMERA_MODEL,
+            "serial": settings.CAMERA_SERIAL,
+            "lens": settings.CAMERA_LENS,
+            "configured_width": settings.CAMERA_WIDTH,
+            "configured_height": settings.CAMERA_HEIGHT,
+            "configured_fps": settings.CAMERA_FPS,
+            "mjpeg": settings.CAMERA_MJPEG,
+            "autofocus_supported": None,
+            "actual_width": None,
+            "actual_height": None,
+            "actual_fps": None,
+            "fourcc": None,
+        }
+        cap = self._capture
+        if cap is None or not cap.isOpened():
+            return caps
+        try:
+            caps["actual_width"] = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            caps["actual_height"] = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            caps["actual_fps"] = round(cap.get(cv2.CAP_PROP_FPS), 1)
+            fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+            caps["fourcc"] = "".join(
+                chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)
+            ).strip()
+            # AUTOFOCUS get() returns -1 on backends/devices that don't expose it.
+            caps["autofocus_supported"] = cap.get(cv2.CAP_PROP_AUTOFOCUS) != -1
+        except Exception:
+            logger.exception("Camera capability query failed (non-fatal)")
+        return caps
 
     def get_stats(self) -> FrameStats:
         now = time.monotonic()
@@ -177,6 +242,7 @@ class CameraService:
             frame_age = (now - self._latest_frame_ts) if self._latest_frame_ts else None
             timestamps = list(self._frame_timestamps)
             healthy = self._healthy
+            frozen = self._frozen
             frame_count = self._frame_count
             device = self._active_device
 
@@ -192,6 +258,7 @@ class CameraService:
             configured_height=settings.CAMERA_HEIGHT,
             configured_fps=settings.CAMERA_FPS,
             last_frame_age_seconds=frame_age,
+            frozen=frozen,
         )
 
     @property
@@ -254,6 +321,7 @@ class CameraService:
         # instead of draining a backlog when the consumer is briefly slow.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        self._freeze_detector.reset()
         logger.info("Camera device %s opened", device)
         return cap
 
@@ -278,6 +346,15 @@ class CameraService:
                 continue
 
             consecutive_failures = 0
+
+            if self._freeze_detector.update(frame):
+                logger.error(
+                    "Camera frame frozen (%d identical reads); forcing reopen.",
+                    self._freeze_detector.repeat_count,
+                )
+                self._mark_unhealthy(frozen=True)
+                return
+
             now = time.monotonic()
             with self._lock:
                 self._latest_frame = frame
@@ -285,10 +362,12 @@ class CameraService:
                 self._frame_timestamps.append(now)
                 self._frame_count += 1
                 self._healthy = True
+                self._frozen = False
 
-    def _mark_unhealthy(self) -> None:
+    def _mark_unhealthy(self, frozen: bool = False) -> None:
         with self._lock:
             self._healthy = False
+            self._frozen = frozen
 
     def _release_capture(self, cap: cv2.VideoCapture) -> None:
         cap.release()
