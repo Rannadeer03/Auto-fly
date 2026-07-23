@@ -11,3 +11,4 @@ pyserial>=3.5
 # Camera (photo capture + video recording)
 opencv-python-headless>=4.9
 numpy>=1.26
+piexif>=1.1.3

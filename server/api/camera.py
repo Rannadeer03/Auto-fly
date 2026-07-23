@@ -25,6 +25,7 @@ async def camera_status() -> dict:
     return {
         "camera": {
             "healthy": stats.healthy,
+            "frozen": stats.frozen,
             "device": stats.device,
             "available_devices": list_camera_devices(),
             "measured_fps": stats.measured_fps,
@@ -36,6 +37,11 @@ async def camera_status() -> dict:
         },
         "recording": recording_service.get_status(),
     }
+
+
+@router.get("/camera/capabilities")
+async def camera_capabilities() -> dict:
+    return camera_service.get_capabilities()
 
 
 @router.post("/camera/photo", response_model=ApiResponse)
